@@ -276,6 +276,10 @@ class LinePacking(QMainWindow):
         
         self.initUI()
 
+        self.camera_timer = QTimer(self)
+        self.camera_timer.timeout.connect(self.update_camera_preview)
+        self.camera_timer.start(1000)  # Update every second
+
     # Phương thức này cập nhật trạng thái khi worker gửi tín hiệu
     def update_trigger_status(self, message):
         """Cập nhật trạng thái trong quá trình gửi message 'TRIGGER'"""
@@ -573,22 +577,27 @@ class LinePacking(QMainWindow):
         self.rate_label.setText(f"{self.get_pass_rate()}%")
         
     def update_camera_preview(self):
-        """Update the camera preview with simulated feed"""
-        try:
-            # For simulation, we'll rotate through a set of test images if available
-            test_dir = "test_images"
-            if os.path.exists(test_dir):
-                images = [f for f in os.listdir(test_dir) if f.endswith(('.jpg', '.jpeg', '.png'))]
-                if images:
-                    image_path = os.path.join(test_dir, images[int(datetime.datetime.now().timestamp()) % len(images)])
-                    if os.path.exists(image_path):
-                        self.current_image_path = image_path
-                        pixmap = QPixmap(image_path)
-                        pixmap = pixmap.scaled(self.camera_label.width(), self.camera_label.height(), 
-                                             Qt.AspectRatioMode.KeepAspectRatio)
-                        self.camera_label.setPixmap(pixmap)
-        except Exception as e:
-            print(f"Camera preview error: {str(e)}")
+        result_folder = r"C:\Users\a\Desktop\Work\VisionCheckLabel\image\Result"
+        
+        # Kiểm tra xem thư mục kết quả có tồn tại không
+        if os.path.exists(result_folder):
+            # Lấy tất cả các tệp ảnh trong thư mục
+            images = [f for f in os.listdir(result_folder) if f.endswith(('.jpg', '.jpeg', '.png', 'bmp'))]
+            
+            if images:
+                # Chọn ảnh đầu tiên từ danh sách ảnh
+                image_path = os.path.join(result_folder, images[-1])  # Lấy ảnh mới nhất
+                if os.path.exists(image_path):
+                    # Cập nhật ảnh trong giao diện
+                    self.current_image_path = image_path
+                    pixmap = QPixmap(image_path)
+                    
+                    # Kích thước ảnh phải tương thích với kích thước của camera view
+                    pixmap = pixmap.scaled(self.camera_label.width(), self.camera_label.height(),
+                                           Qt.AspectRatioMode.KeepAspectRatio)
+                    self.camera_label.setPixmap(pixmap)
+        else:
+            print(f"Result folder does not exist: {result_folder}")
 
     def start_inspection(self):
         """Start the inspection process and send TRIGGER to comp4"""
@@ -598,18 +607,18 @@ class LinePacking(QMainWindow):
                 self.result_view.setText("Please enter S/N and Model")
                 self.result_view.setStyleSheet("color: red; font-weight: bold;")
                 return
-            
-            # Update UI to show processing state
+
+            # Cập nhật giao diện khi bắt đầu quá trình gửi TRIGGER
             self.result_view.setText("Đang gửi message \"TRIGGER\" đến comp4...\nVui lòng đợi...")
             self.result_view.setStyleSheet("color: orange; font-weight: bold;")
             self.teaching_status_label.setText("Processing")
             self.teaching_status_label.setStyleSheet("color: orange; font-weight: bold;")
-            
+
             # Hiển thị thông báo trên thanh trạng thái
             self.statusBar().showMessage(f"Đang gửi message \"TRIGGER\" qua {self.serial_port} - {self.serial_baudrate} baud")
-            
+
             QApplication.processEvents()  # Update UI immediately
-            
+
             # Kiểm tra thư viện PySerial
             try:
                 import serial
@@ -619,48 +628,49 @@ class LinePacking(QMainWindow):
                 self.result_view.setStyleSheet("color: red; font-weight: bold;")
                 self.statusBar().showMessage("Lỗi: Thư viện PySerial chưa được cài đặt!")
                 return
-            
+
             # Kiểm tra xem đã có serial worker đang chạy chưa
             if hasattr(self, 'trigger_worker') and self.trigger_worker.isRunning():
                 self.result_view.setText("Đang xử lý yêu cầu trước đó...\nVui lòng đợi.")
                 return
-            
+
             # Hiển thị debug trên console
             print(f"Bắt đầu gửi message \"TRIGGER\" qua cổng COM4")
-            
+
             # Thay đổi ở đây: Kết nối với COM4 thay vì COM3
             self.serial_port = "COM4"  # Đảm bảo là COM4
-            
+
             # Tạo và chạy worker thread để gửi message "TRIGGER" qua serial
             self.trigger_worker = SerialTriggerWorker(self.serial_port, self.serial_baudrate)
             self.trigger_worker.finished.connect(self.handle_trigger_result)
             self.trigger_worker.status_update.connect(self.update_trigger_status)
             self.trigger_worker.start()
-            
+
             # Hiển thị debug
             print("Đã khởi động thread gửi message \"TRIGGER\"")
-            
+
             # Thêm vào log
             self.add_to_log(
                 sn=self.sn_input.text(),
                 model=self.model_input.text(),
                 result="TRIGGER Sent"
             )
-            
+
             # Start camera preview timer
-            self.camera_timer.start(500)  # Update every 500ms
-            
+            self.camera_timer.start(1000)  # Update every second
+
+            # Sau khi gửi tín hiệu TRIGGER, cập nhật ảnh mới
+            self.update_camera_preview()
+
         except Exception as e:
             import traceback
             traceback.print_exc()  # In stack trace đầy đủ ra console
-            
+
             self.result_view.setText(f"Lỗi khi khởi động hệ thống:\n{str(e)}")
             self.result_view.setStyleSheet("color: red; font-weight: bold;")
             self.teaching_status_label.setText("Error")
             self.teaching_status_label.setStyleSheet("color: red; font-weight: bold;")
             self.statusBar().showMessage(f"Lỗi: {str(e)}")
-
-    
  
 
     def process_captured_image(self, image_path):
