@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QLineEd
                              QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
                              QTreeWidget, QTreeWidgetItem, QMessageBox, QDialog,
                              QFormLayout)
-from PyQt6.QtCore import Qt, QRect, QTimer
+from PyQt6.QtCore import Qt, QRect, QTimer, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QFont, QPixmap, QImage
 import cv2
 import numpy as np
@@ -16,6 +16,8 @@ import os
 import datetime
 import subprocess
 import json
+import serial  # Thêm thư viện pyserial
+import time
 
 
 class LabelChecker:
@@ -223,6 +225,40 @@ class VisionMasterInterface:
         except Exception as e:
             return False, f"Error running vision process: {str(e)}"
 
+class SerialTriggerWorker(QThread):
+    finished = pyqtSignal(bool, str)
+    status_update = pyqtSignal(str)
+
+    def __init__(self, port, baudrate=9600):
+        super().__init__()
+        self.port = port
+        self.baudrate = baudrate
+
+    def run(self):
+        try:
+            self.status_update.emit("Đang mở cổng COM...")
+
+            with serial.Serial(self.port, self.baudrate, timeout=5) as ser:
+                self.status_update.emit(f"Đã kết nối với {self.port} - đang gửi message 'TRIGGER'...")
+                
+                command = b"TRIGGER"
+                ser.write(command)
+
+                # Đọc phản hồi từ comp4
+                response = ser.readline().decode().strip()
+                self.finished.emit(True, f"Message 'TRIGGER' đã gửi thành công. Phản hồi: {response}")
+
+        except serial.SerialTimeoutException:
+            self.status_update.emit("Timeout khi kết nối serial!")
+            self.finished.emit(False, "Kết nối serial timeout")
+        except serial.SerialException as e:
+            self.status_update.emit(f"Lỗi serial: {str(e)}")
+            self.finished.emit(False, f"Lỗi serial: {str(e)}")
+        except Exception as e:
+            self.status_update.emit(f"Lỗi không xác định: {str(e)}")
+            self.finished.emit(False, f"Lỗi không xác định: {str(e)}")
+
+
 class LinePacking(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -233,8 +269,41 @@ class LinePacking(QMainWindow):
         self.pass_count = 0
         self.fail_count = 0
         self.sol_file_loaded = False
-        self.initUI()
         
+        # Cấu hình kết nối serial
+        self.serial_port = "COM4"  # Đảm bảo kết nối với COM4
+        self.serial_baudrate = 9600
+        
+        self.initUI()
+
+    # Phương thức này cập nhật trạng thái khi worker gửi tín hiệu
+    def update_trigger_status(self, message):
+        """Cập nhật trạng thái trong quá trình gửi message 'TRIGGER'"""
+        try:
+            # Cập nhật giao diện với thông báo từ worker
+            self.result_view.setText(f"Trạng thái message 'TRIGGER':\n{message}")
+            self.statusBar().showMessage(message)
+            QApplication.processEvents()  # Đảm bảo UI được cập nhật ngay lập tức
+        except Exception as e:
+            print(f"Error updating UI with trigger status: {str(e)}")
+            self.result_view.setText(f"Lỗi khi cập nhật trạng thái: {str(e)}")
+            self.result_view.setStyleSheet("color: red; font-weight: bold;")
+
+    def handle_trigger_result(self, success, message):
+        """Xử lý kết quả gửi message 'TRIGGER'"""
+        try:
+            if success:
+                self.result_view.setText(f"Message 'TRIGGER' đã gửi thành công!\n{message}")
+                self.result_view.setStyleSheet("color: green; font-weight: bold;")
+            else:
+                self.result_view.setText(f"Message 'TRIGGER' thất bại!\n{message}")
+                self.result_view.setStyleSheet("color: red; font-weight: bold;")
+        except Exception as e:
+            print(f"Error in handling trigger result: {str(e)}")
+            self.result_view.setText(f"Lỗi khi xử lý kết quả: {str(e)}")
+            self.result_view.setStyleSheet("color: red; font-weight: bold;")
+
+
     def initUI(self):
         # Set window title and size
         self.setWindowTitle('UI Vision in Line Packing RU,OCDU,Acessory')
@@ -381,7 +450,7 @@ class LinePacking(QMainWindow):
         
         views_layout.addWidget(self.image_frame, 2)  # Tăng tỷ lệ cho phần ảnh
         
-        # Right view - Results
+        # Right view - Results - Thiết lập chiều cao cố định
         self.result_frame = QFrame()
         self.result_frame.setStyleSheet("border: 1px solid orange; background-color: white;")
         result_layout = QVBoxLayout(self.result_frame)
@@ -394,6 +463,9 @@ class LinePacking(QMainWindow):
         self.result_view = QLabel("NG/OK/Waiting...")
         self.result_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.result_view.setStyleSheet("font-size: 14px;")
+        self.result_view.setWordWrap(True)  # Cho phép xuống dòng
+        self.result_view.setMinimumHeight(80)  # Thiết lập chiều cao tối thiểu
+        self.result_view.setMaximumHeight(80)  # Thiết lập chiều cao tối đa
         result_layout.addWidget(self.result_view)
         
         views_layout.addWidget(self.result_frame, 1)  # Để 1 cho phần kết quả
@@ -519,42 +591,78 @@ class LinePacking(QMainWindow):
             print(f"Camera preview error: {str(e)}")
 
     def start_inspection(self):
-        """Start the inspection process"""
+        """Start the inspection process and send TRIGGER to comp4"""
         try:
             # Check if S/N and Model are entered
             if not self.sn_input.text() or not self.model_input.text():
                 self.result_view.setText("Please enter S/N and Model")
                 self.result_view.setStyleSheet("color: red; font-weight: bold;")
                 return
-                
-            # Update UI to show processing state
-            self.result_view.setText("Processing...\nWaiting for capture...")
-            self.result_view.setStyleSheet("color: orange; font-weight: bold;")
             
-            # Update teaching model with current model
-            self.teaching_model_label.setText(self.model_input.text())
+            # Update UI to show processing state
+            self.result_view.setText("Đang gửi message \"TRIGGER\" đến comp4...\nVui lòng đợi...")
+            self.result_view.setStyleSheet("color: orange; font-weight: bold;")
             self.teaching_status_label.setText("Processing")
             self.teaching_status_label.setStyleSheet("color: orange; font-weight: bold;")
             
+            # Hiển thị thông báo trên thanh trạng thái
+            self.statusBar().showMessage(f"Đang gửi message \"TRIGGER\" qua {self.serial_port} - {self.serial_baudrate} baud")
+            
             QApplication.processEvents()  # Update UI immediately
+            
+            # Kiểm tra thư viện PySerial
+            try:
+                import serial
+                print("PySerial đã được cài đặt")
+            except ImportError:
+                self.result_view.setText("Lỗi: Thư viện PySerial chưa được cài đặt!\nVui lòng cài đặt bằng lệnh:\npip install pyserial")
+                self.result_view.setStyleSheet("color: red; font-weight: bold;")
+                self.statusBar().showMessage("Lỗi: Thư viện PySerial chưa được cài đặt!")
+                return
+            
+            # Kiểm tra xem đã có serial worker đang chạy chưa
+            if hasattr(self, 'trigger_worker') and self.trigger_worker.isRunning():
+                self.result_view.setText("Đang xử lý yêu cầu trước đó...\nVui lòng đợi.")
+                return
+            
+            # Hiển thị debug trên console
+            print(f"Bắt đầu gửi message \"TRIGGER\" qua cổng COM4")
+            
+            # Thay đổi ở đây: Kết nối với COM4 thay vì COM3
+            self.serial_port = "COM4"  # Đảm bảo là COM4
+            
+            # Tạo và chạy worker thread để gửi message "TRIGGER" qua serial
+            self.trigger_worker = SerialTriggerWorker(self.serial_port, self.serial_baudrate)
+            self.trigger_worker.finished.connect(self.handle_trigger_result)
+            self.trigger_worker.status_update.connect(self.update_trigger_status)
+            self.trigger_worker.start()
+            
+            # Hiển thị debug
+            print("Đã khởi động thread gửi message \"TRIGGER\"")
+            
+            # Thêm vào log
+            self.add_to_log(
+                sn=self.sn_input.text(),
+                model=self.model_input.text(),
+                result="TRIGGER Sent"
+            )
             
             # Start camera preview timer
             self.camera_timer.start(500)  # Update every 500ms
             
-            # For testing with a file dialog:
-            file_path, _ = QFileDialog.getOpenFileName(
-                self, "Select Test Image", "", "Image Files (*.png *.jpg *.jpeg *.bmp)"
-            )
-            
-            if file_path:
-                self.process_captured_image(file_path)
-            
         except Exception as e:
-            self.result_view.setText(f"Error starting system:\n{str(e)}")
+            import traceback
+            traceback.print_exc()  # In stack trace đầy đủ ra console
+            
+            self.result_view.setText(f"Lỗi khi khởi động hệ thống:\n{str(e)}")
             self.result_view.setStyleSheet("color: red; font-weight: bold;")
             self.teaching_status_label.setText("Error")
             self.teaching_status_label.setStyleSheet("color: red; font-weight: bold;")
+            self.statusBar().showMessage(f"Lỗi: {str(e)}")
+
     
+ 
+
     def process_captured_image(self, image_path):
         """Process a captured or selected image"""
         try:
@@ -722,14 +830,31 @@ class LinePacking(QMainWindow):
     def recheck(self):
         """Perform a recheck of the current item"""
         try:
-            if self.current_image_path and os.path.exists(self.current_image_path):
-                self.process_captured_image(self.current_image_path)
-            else:
-                self.result_view.setText("No image available for recheck")
-                self.result_view.setStyleSheet("color: orange; font-weight: bold;")
+            self.result_view.setText("Đang gửi message \"TRIGGER\" để kiểm tra lại...\nVui lòng đợi...")
+            self.result_view.setStyleSheet("color: orange; font-weight: bold;")
+            self.teaching_status_label.setText("Processing")
+            self.teaching_status_label.setStyleSheet("color: orange; font-weight: bold;")
+            self.statusBar().showMessage(f"Đang gửi message \"TRIGGER\" để kiểm tra lại qua {self.serial_port}")
+            
+            QApplication.processEvents()
+            
+            # Tạo và chạy worker thread để gửi message \"TRIGGER\" qua serial
+            self.trigger_worker = SerialTriggerWorker(self.serial_port, self.serial_baudrate)
+            self.trigger_worker.finished.connect(self.handle_trigger_result)
+            self.trigger_worker.status_update.connect(self.update_trigger_status)
+            self.trigger_worker.start()
+            
+            # Thêm vào log
+            self.add_to_log(
+                sn=self.sn_input.text(),
+                model=self.model_input.text(),
+                result="RECHECK Triggered"
+            )
+            
         except Exception as e:
-            self.result_view.setText(f"Recheck error:\n{str(e)}")
+            self.result_view.setText(f"Lỗi kiểm tra lại:\n{str(e)}")
             self.result_view.setStyleSheet("color: red; font-weight: bold;")
+            self.statusBar().showMessage(f"Lỗi: {str(e)}")
 
     def add_to_log(self, sn, model, result):
         """Add an entry to the log table"""
@@ -971,6 +1096,25 @@ class LinePacking(QMainWindow):
         
         image_proc_layout.addWidget(advanced_group)
         
+        # Connection settings - Thay đổi từ IP/Port sang Serial Port
+        connection_group = QGroupBox("Cài đặt kết nối Serial")
+        connection_layout = QFormLayout(connection_group)
+        
+        serial_port_combo = QComboBox()
+        # Lấy danh sách cổng COM có sẵn
+        available_ports = [f"COM{i}" for i in range(1, 10)]  # Có thể thay bằng serial.tools.list_ports
+        serial_port_combo.addItems(available_ports)
+        if self.serial_port in available_ports:
+            serial_port_combo.setCurrentText(self.serial_port)
+        connection_layout.addRow("Cổng COM:", serial_port_combo)
+        
+        baudrate_combo = QComboBox()
+        baudrate_combo.addItems(["9600", "19200", "38400", "57600", "115200"])
+        baudrate_combo.setCurrentText(str(self.serial_baudrate))
+        connection_layout.addRow("Baudrate:", baudrate_combo)
+        
+        image_proc_layout.addWidget(connection_group)
+        
         tab_widget.addTab(image_proc_tab, "Xử lý ảnh")
         
         # Thêm tab widget vào layout chính
@@ -998,6 +1142,33 @@ class LinePacking(QMainWindow):
         
         # Show the dialog
         teaching_dialog.exec()
+
+    def save_teaching_config(self, dialog, port, baudrate):
+        """Lưu cấu hình teaching và thông tin kết nối"""
+        self.serial_port = port
+        self.serial_baudrate = int(baudrate)
+        self.statusBar().showMessage(f"Config saved - Serial Port: {self.serial_port}, Baudrate: {self.serial_baudrate}")
+        dialog.accept()
+        
+    def test_comp4_connection(self, port, baudrate):
+        """Test kết nối serial đến comp4"""
+        self.result_view.setText("Testing serial connection...\nPlease wait...")
+        self.result_view.setStyleSheet("color: orange; font-weight: bold;")
+        QApplication.processEvents()
+        
+        # Tạo và chạy worker thread
+        self.test_worker = SerialTriggerWorker(port, int(baudrate))
+        self.test_worker.finished.connect(self.handle_test_result)
+        self.test_worker.start()
+
+    def handle_test_result(self, success, message):
+        """Handle the result of the test connection"""
+        if success:
+            self.result_view.setText(f"Serial connection test successful: {message}")
+            self.result_view.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.result_view.setText(f"Serial connection test failed: {message}")
+            self.result_view.setStyleSheet("color: red; font-weight: bold;")
 
 def main():
     app = QApplication(sys.argv)
