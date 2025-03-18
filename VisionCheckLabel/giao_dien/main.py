@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QLineEd
                              QDoubleSpinBox, QGroupBox, QRadioButton, QScrollArea,
                              QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
                              QTreeWidget, QTreeWidgetItem, QMessageBox, QDialog,
-                             QFormLayout)
+                             QFormLayout, QSplitter)
 from PyQt6.QtCore import Qt, QRect, QTimer, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QFont, QPixmap, QImage
 import cv2
@@ -25,62 +25,6 @@ class LabelChecker:
     
     def __init__(self):
         self.last_image = None
-        self.last_processed_image = None
-    
-    def process_image(self, image_path):
-        """Process an image to detect barcodes"""
-        # Load and store the original image
-        image = cv2.imread(image_path)
-        if image is None:
-            raise ValueError(f"Failed to load image: {image_path}")
-            
-        self.last_image = image.copy()
-        
-        # Convert to grayscale
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # Apply Gaussian blur to reduce noise
-        blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-        
-        # Apply adaptive threshold
-        thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                      cv2.THRESH_BINARY, 11, 2)
-        
-        # Store the processed image
-        self.last_processed_image = thresh.copy()
-        
-        # Try to decode barcodes from the processed image
-        decode_objects = decode(thresh)
-        
-        # If no barcodes found, try with the original image
-        if not decode_objects:
-            decode_objects = decode(Image.open(image_path))
-        
-        return decode_objects
-    
-    def draw_barcode_locations(self, image, decode_objects):
-        """Draw boxes around detected barcodes"""
-        result_image = image.copy()
-        
-        for obj in decode_objects:
-            # Get the barcode polygon points
-            points = obj.polygon
-            
-            if points:
-                # Convert points to numpy array
-                pts = np.array([(p.x, p.y) for p in points], np.int32)
-                pts = pts.reshape((-1, 1, 2))
-                
-                # Draw the polygon
-                cv2.polylines(result_image, [pts], True, (0, 255, 0), 2)
-                
-                # Draw the barcode data
-                x = points[0].x
-                y = points[0].y
-                cv2.putText(result_image, obj.data.decode('utf-8'), (x, y - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                
-        return result_image
     
     def verify_barcode(self, detected_code, expected_code):
         """Verify if detected barcode matches expected value"""
@@ -92,138 +36,6 @@ class LabelChecker:
         else:
             return False, f"FAIL - Mismatch"
 
-class VisionMasterInterface:
-    """Interface to communicate with Vision Master through the UPDATE.sol file"""
-    
-    def __init__(self, sol_file_path=None):
-        self.sol_file_path = sol_file_path
-        self.config = {}
-        
-    def load_sol_file(self, file_path=None):
-        """Load and parse the UPDATE.sol file"""
-        if file_path:
-            self.sol_file_path = file_path
-            
-        if not self.sol_file_path or not os.path.exists(self.sol_file_path):
-            raise FileNotFoundError(f"SOL file not found: {self.sol_file_path}")
-            
-        try:
-            # Đọc file .sol - Điều chỉnh phương thức đọc tùy theo định dạng thực tế
-            with open(self.sol_file_path, 'r') as f:
-                # Giả định file có cấu trúc đơn giản như text hoặc JSON
-                content = f.read()
-                
-                # Nếu file là JSON
-                try:
-                    self.config = json.loads(content)
-                except json.JSONDecodeError:
-                    # Nếu không phải JSON, xử lý như file văn bản thông thường
-                    self.parse_sol_content(content)
-                    
-            return True
-        except Exception as e:
-            print(f"Error loading SOL file: {str(e)}")
-            return False
-    
-    def parse_sol_content(self, content):
-        """Parse the content of the SOL file if it's not a JSON format"""
-        # Điều chỉnh parser này tùy theo cấu trúc thực tế của file .sol
-        lines = content.strip().split('\n')
-        self.config = {}
-        
-        current_section = None
-        for line in lines:
-            line = line.strip()
-            if line.startswith('[') and line.endswith(']'):
-                # Đây là tiêu đề section
-                current_section = line[1:-1]
-                self.config[current_section] = {}
-            elif '=' in line and current_section:
-                # Đây là cặp key-value
-                key, value = line.split('=', 1)
-                self.config[current_section][key.strip()] = value.strip()
-    
-    def process_image(self, image_path):
-        """Process image using the Vision Master configuration"""
-        if not self.config:
-            raise ValueError("No configuration loaded. Please load the SOL file first.")
-            
-        # Phương pháp 1: Sử dụng thông tin từ file .sol để xử lý ảnh trong Python
-        try:
-            # Đọc ảnh
-            image = cv2.imread(image_path)
-            if image is None:
-                raise ValueError(f"Failed to load image: {image_path}")
-                
-            # Thực hiện xử lý ảnh dựa trên config từ file .sol
-            # Đây là phần bạn cần điều chỉnh dựa trên cấu trúc thực tế của file .sol
-            processed_image = self.apply_vision_processing(image)
-            
-            return processed_image, True, "Success"
-        except Exception as e:
-            return None, False, str(e)
-    
-    def apply_vision_processing(self, image):
-        """Apply vision processing based on the loaded configuration"""
-        # Điều chỉnh hàm này tùy theo nội dung thực tế của file .sol
-        # Ví dụ về một số xử lý cơ bản:
-        
-        processed = image.copy()
-        
-        # Áp dụng các bước xử lý từ config
-        if 'ProcessingSteps' in self.config:
-            steps = self.config.get('ProcessingSteps', {})
-            
-            # Ví dụ: Chuyển đổi sang grayscale
-            if steps.get('ConvertGrayscale') == 'True':
-                processed = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
-                # Chuyển lại sang BGR để các xử lý khác hoạt động đúng
-                if len(processed.shape) == 2:
-                    processed = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
-            
-            # Ví dụ: Áp dụng Gaussian blur
-            if 'GaussianBlur' in steps:
-                ksize = int(steps.get('GaussianBlurKernelSize', '3'))
-                if ksize % 2 == 0:
-                    ksize += 1  # Đảm bảo kích thước kernel là số lẻ
-                sigma = float(steps.get('GaussianBlurSigma', '0'))
-                processed = cv2.GaussianBlur(processed, (ksize, ksize), sigma)
-            
-            # Ví dụ: Phát hiện cạnh với Canny
-            if steps.get('CannyEdgeDetection') == 'True':
-                threshold1 = float(steps.get('CannyThreshold1', '100'))
-                threshold2 = float(steps.get('CannyThreshold2', '200'))
-                edges = cv2.Canny(processed, threshold1, threshold2)
-                # Chuyển lại sang BGR
-                processed = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-                
-        return processed
-    
-    def run_external_vision_process(self, image_path, output_path=None):
-        """Run the external Vision Master program using subprocess"""
-        # Phương pháp 2: Gọi chương trình vision master thông qua subprocess
-        
-        # Đường dẫn đến chương trình vision master
-        vision_master_exe = self.config.get('System', {}).get('ExecutablePath', 'vision_master.exe')
-        
-        # Tham số dòng lệnh
-        command = [
-            vision_master_exe,
-            '-config', self.sol_file_path,
-            '-input', image_path
-        ]
-        
-        if output_path:
-            command.extend(['-output', output_path])
-            
-        try:
-            # Chạy lệnh
-            result = subprocess.run(command, capture_output=True, text=True, check=True)
-            return True, result.stdout
-        except subprocess.CalledProcessError as e:
-            return False, f"Process error: {e.stderr}"
-        except Exception as e:
-            return False, f"Error running vision process: {str(e)}"
 
 class SerialTriggerWorker(QThread):
     finished = pyqtSignal(bool, str)
@@ -263,22 +75,25 @@ class LinePacking(QMainWindow):
     def __init__(self):
         super().__init__()
         self.label_checker = LabelChecker()
-        self.vision_master = VisionMasterInterface()
         self.current_image_path = None
         self.scan_count = 0
         self.pass_count = 0
         self.fail_count = 0
-        self.sol_file_loaded = False
         
         # Cấu hình kết nối serial
         self.serial_port = "COM4"  # Đảm bảo kết nối với COM4
         self.serial_baudrate = 9600
         
-        self.initUI()
+        # Biến để theo dõi trạng thái hoạt động
+        self.is_running = False
+        self.original_pixmap = None  # Để lưu trữ ảnh gốc
+        
+        self.init_ui()  # Đổi tên từ initUI thành init_ui để tuân theo quy ước Python
 
+        # Tạo timer nhưng chưa khởi động
         self.camera_timer = QTimer(self)
         self.camera_timer.timeout.connect(self.update_camera_preview)
-        self.camera_timer.start(1000)  # Update every second
+        # Chỉ bắt đầu khi nhấn nút Start
 
     # Phương thức này cập nhật trạng thái khi worker gửi tín hiệu
     def update_trigger_status(self, message):
@@ -307,8 +122,35 @@ class LinePacking(QMainWindow):
             self.result_view.setText(f"Lỗi khi xử lý kết quả: {str(e)}")
             self.result_view.setStyleSheet("color: red; font-weight: bold;")
 
+    def resizeEvent(self, event):
+        """Xử lý sự kiện thay đổi kích thước cửa sổ"""
+        super().resizeEvent(event)
+        # Cập nhật hiển thị ảnh nếu có
+        if hasattr(self, 'original_pixmap') and self.original_pixmap and not self.original_pixmap.isNull():
+            self.update_image_displays()
+    
+    def update_image_displays(self):
+        """Cập nhật hiển thị ảnh theo kích thước hiện tại của các label"""
+        if self.original_pixmap and not self.original_pixmap.isNull():
+            # Cập nhật camera view
+            camera_pixmap = self.original_pixmap.scaled(
+                self.camera_label.width(), 
+                self.camera_label.height(),
+                Qt.AspectRatioMode.KeepAspectRatio, 
+                Qt.TransformationMode.SmoothTransformation  # Sử dụng biến đổi mượt hơn
+            )
+            self.camera_label.setPixmap(camera_pixmap)
+            
+            # Cập nhật image view
+            image_pixmap = self.original_pixmap.scaled(
+                self.image_view.width(), 
+                self.image_view.height(),
+                Qt.AspectRatioMode.KeepAspectRatio, 
+                Qt.TransformationMode.SmoothTransformation  # Sử dụng biến đổi mượt hơn
+            )
+            self.image_view.setPixmap(image_pixmap)
 
-    def initUI(self):
+    def init_ui(self):
         # Set window title and size
         self.setWindowTitle('UI Vision in Line Packing RU,OCDU,Acessory')
         self.setGeometry(100, 100, 1200, 800)
@@ -377,7 +219,11 @@ class LinePacking(QMainWindow):
         # Right panel - Controls and status
         self.controls_frame = QFrame()
         self.controls_frame.setStyleSheet("border: 1px solid orange;")
-        controls_layout = QVBoxLayout(self.controls_frame)
+        
+        # Tạo QSplitter dọc cho bên phải để có thể thay đổi kích thước các thành phần
+        right_splitter = QSplitter(Qt.Orientation.Vertical)
+        # Đặt thuộc tính để ngăn các thành phần bị thu gọn hoàn toàn
+        right_splitter.setChildrenCollapsible(False)
         
         # Status display - Cải thiện hiển thị trạng thái sản lượng
         status_frame = QFrame()
@@ -413,9 +259,15 @@ class LinePacking(QMainWindow):
         stats_grid.addWidget(self.rate_label, 1, 3)
         
         status_layout.addLayout(stats_grid)
-        controls_layout.addWidget(status_frame)
+        # Đặt chiều cao tối thiểu lớn hơn để không bị thu nhỏ quá
+        status_frame.setMinimumHeight(80)
+        right_splitter.addWidget(status_frame)
         
         # Control buttons
+        buttons_container = QWidget()
+        buttons_layout = QVBoxLayout(buttons_container)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        
         button_frame = QHBoxLayout()
         self.start_btn = QPushButton("Start")
         self.start_btn.setStyleSheet("background-color: #90EE90; font-weight: bold;")
@@ -431,15 +283,14 @@ class LinePacking(QMainWindow):
         button_frame.addWidget(self.reset_btn)
         button_frame.addWidget(self.recheck_btn)
         
-        controls_layout.addLayout(button_frame)
+        buttons_layout.addLayout(button_frame)
         
         # Image and Result views
         views_layout = QHBoxLayout()
         
-        # Left view - Camera image - Tăng kích thước
+        # Left view - Camera image
         self.image_frame = QFrame()
         self.image_frame.setStyleSheet("border: 1px solid orange; background-color: white;")
-        self.image_frame.setMinimumHeight(250)  # Tăng chiều cao tối thiểu
         image_layout = QVBoxLayout(self.image_frame)
         
         image_title = QLabel("View ảnh vừa chụp")
@@ -449,12 +300,12 @@ class LinePacking(QMainWindow):
         
         self.image_view = QLabel()
         self.image_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_view.setMinimumSize(300, 220)  # Thiết lập kích thước tối thiểu
+        self.image_view.setMinimumSize(300, 220)
         image_layout.addWidget(self.image_view)
         
-        views_layout.addWidget(self.image_frame, 2)  # Tăng tỷ lệ cho phần ảnh
+        views_layout.addWidget(self.image_frame, 2)
         
-        # Right view - Results - Thiết lập chiều cao cố định
+        # Right view - Results
         self.result_frame = QFrame()
         self.result_frame.setStyleSheet("border: 1px solid orange; background-color: white;")
         result_layout = QVBoxLayout(self.result_frame)
@@ -467,16 +318,19 @@ class LinePacking(QMainWindow):
         self.result_view = QLabel("NG/OK/Waiting...")
         self.result_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.result_view.setStyleSheet("font-size: 14px;")
-        self.result_view.setWordWrap(True)  # Cho phép xuống dòng
-        self.result_view.setMinimumHeight(80)  # Thiết lập chiều cao tối thiểu
-        self.result_view.setMaximumHeight(80)  # Thiết lập chiều cao tối đa
+        self.result_view.setWordWrap(True)
+        self.result_view.setMinimumHeight(80)
+        self.result_view.setMaximumHeight(80)
         result_layout.addWidget(self.result_view)
         
-        views_layout.addWidget(self.result_frame, 1)  # Để 1 cho phần kết quả
+        views_layout.addWidget(self.result_frame, 1)
         
-        controls_layout.addLayout(views_layout)
+        buttons_layout.addLayout(views_layout)
+        # Đặt chiều cao tối thiểu lớn hơn
+        buttons_container.setMinimumHeight(200)
+        right_splitter.addWidget(buttons_container)
         
-        # Teaching display - Cải thiện hiển thị tool teaching
+        # Teaching display
         self.teaching_frame = QFrame()
         self.teaching_frame.setStyleSheet("border: 1px solid orange; background-color: white;")
         teaching_layout = QVBoxLayout(self.teaching_frame)
@@ -517,7 +371,9 @@ class LinePacking(QMainWindow):
         self.open_teaching_btn.clicked.connect(self.open_teaching_config)
         teaching_layout.addWidget(self.open_teaching_btn)
         
-        controls_layout.addWidget(self.teaching_frame)
+        # Đảm bảo luôn có kích thước tối thiểu hiển thị
+        self.teaching_frame.setMinimumHeight(130)
+        right_splitter.addWidget(self.teaching_frame)
         
         # Log process display
         self.log_frame = QFrame()
@@ -540,9 +396,24 @@ class LinePacking(QMainWindow):
         self.log_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         log_layout.addWidget(self.log_table)
         
-        controls_layout.addWidget(self.log_frame)
+        # Đảm bảo luôn có kích thước tối thiểu hiển thị
+        self.log_frame.setMinimumHeight(90)
+        right_splitter.addWidget(self.log_frame)
         
-        main_content_layout.addWidget(self.controls_frame, 1)  # Takes 1/3 of width
+        # Thêm nút khôi phục kích thước mặc định
+        restore_sizes_btn = QPushButton("↺ Khôi phục kích thước mặc định")
+        restore_sizes_btn.setStyleSheet("background-color: #FFD700; font-weight: bold;")
+        restore_sizes_btn.clicked.connect(lambda: self.restore_default_splitter_sizes(right_splitter))
+        
+        # Thiết lập kích thước tương đối ban đầu cho các phần tử trong right_splitter
+        right_splitter.setSizes([100, 300, 200, 200])
+        
+        # Tạo layout cho controls_frame để chứa right_splitter và nút khôi phục
+        controls_layout = QVBoxLayout(self.controls_frame)
+        controls_layout.addWidget(right_splitter)
+        controls_layout.addWidget(restore_sizes_btn)
+        
+        main_content_layout.addWidget(self.controls_frame, 1)
         
         main_layout.addWidget(self.main_content)
         
@@ -553,30 +424,15 @@ class LinePacking(QMainWindow):
         self.stop_btn.clicked.connect(self.stop_inspection)
         self.reset_btn.clicked.connect(self.reset_system)
         self.recheck_btn.clicked.connect(self.recheck)
-        
-        # Setup a timer for simulating camera preview
-        self.camera_timer = QTimer(self)
-        self.camera_timer.timeout.connect(self.update_camera_preview)
-        
-        # Thêm nút Load SOL File trong phần Setting
-        self.load_sol_btn = QPushButton("Load SOL File")
-        self.load_sol_btn.clicked.connect(self.load_sol_file)
-        # Thêm nút này vào giao diện setting
-        
-    def get_pass_rate(self):
-        """Calculate pass rate percentage"""
-        if self.scan_count == 0:
-            return "0.0"
-        return f"{(self.pass_count / self.scan_count) * 100:.1f}"
-        
-    def update_stats(self):
-        """Update the statistics display with detailed information"""
-        self.ok_count_label.setText(str(self.pass_count))
-        self.ng_count_label.setText(str(self.fail_count))
-        self.total_count_label.setText(str(self.scan_count))
-        self.rate_label.setText(f"{self.get_pass_rate()}%")
-        
+
+    def restore_default_splitter_sizes(self, splitter):
+        """Khôi phục kích thước mặc định cho splitter"""
+        splitter.setSizes([100, 300, 200, 200])
+
     def update_camera_preview(self):
+        if not self.is_running:
+            return  # Không cập nhật nếu chưa bắt đầu chạy
+            
         result_folder = r"C:\Users\a\Desktop\Work\VisionCheckLabel\image\Result"
         
         # Kiểm tra xem thư mục kết quả có tồn tại không
@@ -585,19 +441,97 @@ class LinePacking(QMainWindow):
             images = [f for f in os.listdir(result_folder) if f.endswith(('.jpg', '.jpeg', '.png', 'bmp'))]
             
             if images:
-                # Chọn ảnh đầu tiên từ danh sách ảnh
+                # Chọn ảnh mới nhất từ danh sách ảnh
                 image_path = os.path.join(result_folder, images[-1])  # Lấy ảnh mới nhất
-                if os.path.exists(image_path):
-                    # Cập nhật ảnh trong giao diện
-                    self.current_image_path = image_path
-                    pixmap = QPixmap(image_path)
-                    
-                    # Kích thước ảnh phải tương thích với kích thước của camera view
-                    pixmap = pixmap.scaled(self.camera_label.width(), self.camera_label.height(),
-                                           Qt.AspectRatioMode.KeepAspectRatio)
-                    self.camera_label.setPixmap(pixmap)
+                
+                # Chỉ cập nhật nếu đây là ảnh mới
+                if image_path != self.current_image_path:
+                    if os.path.exists(image_path):
+                        # Lưu đường dẫn ảnh hiện tại
+                        self.current_image_path = image_path
+                        
+                        # Tải ảnh và lưu phiên bản gốc
+                        self.original_pixmap = QPixmap(image_path)
+                        
+                        # Cập nhật hiển thị ảnh
+                        self.update_image_displays()
+                        
+                        # Phân tích kết quả từ barcode trong ảnh nếu có
+                        self.process_result_from_image(image_path)
         else:
             print(f"Result folder does not exist: {result_folder}")
+            
+    def process_result_from_image(self, image_path):
+        """Xử lý kết quả từ ảnh đã được xử lý bởi phần mềm thứ 3"""
+        try:
+            # Đọc ảnh và tìm barcode
+            image = cv2.imread(image_path)
+            if image is None:
+                print(f"Failed to load image: {image_path}")
+                return
+                
+            # Tìm barcode bằng pyzbar
+            barcodes = decode(image)
+            
+            if barcodes:
+                # Lấy barcode đầu tiên
+                barcode = barcodes[0]
+                barcode_data = barcode.data.decode('utf-8')
+                barcode_type = barcode.type
+                
+                # Hiển thị thông tin barcode
+                barcode_info = f"Detected: {barcode_data}\nType: {barcode_type}"
+                
+                # Lấy mã barcode mong đợi (sử dụng S/N)
+                expected_barcode = self.sn_input.text()
+                
+                # Kiểm tra mã barcode
+                if barcode_data == expected_barcode:
+                    self.result_view.setText(f"PASS\n{barcode_info}")
+                    self.result_view.setStyleSheet("color: green; font-weight: bold;")
+                    self.pass_count += 1
+                    self.teaching_status_label.setText("PASS")
+                    self.teaching_status_label.setStyleSheet("color: green; font-weight: bold;")
+                else:
+                    self.result_view.setText(f"FAIL - Mismatch\n{barcode_info}")
+                    self.result_view.setStyleSheet("color: red; font-weight: bold;")
+                    self.fail_count += 1
+                    self.teaching_status_label.setText("FAIL")
+                    self.teaching_status_label.setStyleSheet("color: red; font-weight: bold;")
+                
+                # Cập nhật số lần quét và thống kê
+                self.scan_count += 1
+                self.update_stats()
+                
+                # Thêm vào log
+                self.add_to_log(
+                    sn=self.sn_input.text(),
+                    model=self.model_input.text(),
+                    result=self.result_view.text().split('\n')[0]  # Dòng đầu tiên của kết quả
+                )
+            else:
+                # Không tìm thấy barcode
+                self.result_view.setText("FAIL\nNo barcode detected")
+                self.result_view.setStyleSheet("color: red; font-weight: bold;")
+                self.fail_count += 1
+                self.teaching_status_label.setText("FAIL")
+                self.teaching_status_label.setStyleSheet("color: red; font-weight: bold;")
+                
+                # Cập nhật số lần quét và thống kê
+                self.scan_count += 1
+                self.update_stats()
+                
+                # Thêm vào log
+                self.add_to_log(
+                    sn=self.sn_input.text(),
+                    model=self.model_input.text(),
+                    result="FAIL - No barcode"
+                )
+                
+        except Exception as e:
+            print(f"Error processing result from image: {str(e)}")
+            self.result_view.setText(f"Error: {str(e)}")
+            self.result_view.setStyleSheet("color: red; font-weight: bold;")
 
     def start_inspection(self):
         """Start the inspection process and send TRIGGER to comp4"""
@@ -608,6 +542,9 @@ class LinePacking(QMainWindow):
                 self.result_view.setStyleSheet("color: red; font-weight: bold;")
                 return
 
+            # Đánh dấu là đã bắt đầu chạy
+            self.is_running = True
+            
             # Cập nhật giao diện khi bắt đầu quá trình gửi TRIGGER
             self.result_view.setText("Đang gửi message \"TRIGGER\" đến comp4...\nVui lòng đợi...")
             self.result_view.setStyleSheet("color: orange; font-weight: bold;")
@@ -627,6 +564,7 @@ class LinePacking(QMainWindow):
                 self.result_view.setText("Lỗi: Thư viện PySerial chưa được cài đặt!\nVui lòng cài đặt bằng lệnh:\npip install pyserial")
                 self.result_view.setStyleSheet("color: red; font-weight: bold;")
                 self.statusBar().showMessage("Lỗi: Thư viện PySerial chưa được cài đặt!")
+                self.is_running = False
                 return
 
             # Kiểm tra xem đã có serial worker đang chạy chưa
@@ -656,13 +594,11 @@ class LinePacking(QMainWindow):
                 result="TRIGGER Sent"
             )
 
-            # Start camera preview timer
+            # Bây giờ mới bắt đầu camera timer
             self.camera_timer.start(1000)  # Update every second
 
-            # Sau khi gửi tín hiệu TRIGGER, cập nhật ảnh mới
-            self.update_camera_preview()
-
         except Exception as e:
+            self.is_running = False
             import traceback
             traceback.print_exc()  # In stack trace đầy đủ ra console
 
@@ -671,144 +607,18 @@ class LinePacking(QMainWindow):
             self.teaching_status_label.setText("Error")
             self.teaching_status_label.setStyleSheet("color: red; font-weight: bold;")
             self.statusBar().showMessage(f"Lỗi: {str(e)}")
- 
-
-    def process_captured_image(self, image_path):
-        """Process a captured or selected image"""
-        try:
-            # Stop camera preview
-            self.camera_timer.stop()
-            
-            # Update UI
-            self.result_view.setText("Processing image...\nPlease wait...")
-            self.result_view.setStyleSheet("color: orange; font-weight: bold;")
-            QApplication.processEvents()
-            
-            # Load and display the image
-            pixmap = QPixmap(image_path)
-            if not pixmap.isNull():
-                # Display in image view
-                pixmap_small = pixmap.scaled(self.image_view.width(), self.image_view.height(),
-                                          Qt.AspectRatioMode.KeepAspectRatio)
-                self.image_view.setPixmap(pixmap_small)
-                
-                # Xử lý ảnh với Vision Master nếu đã load file .sol
-                use_vision_master = self.sol_file_loaded
-                
-                if use_vision_master:
-                    # Sử dụng Vision Master để xử lý
-                    processed_image, success, message = self.vision_master.process_image(image_path)
-                    
-                    if success and processed_image is not None:
-                        # Hiển thị ảnh đã xử lý
-                        height, width, channel = processed_image.shape
-                        bytes_per_line = 3 * width
-                        qimg = QImage(processed_image.data, width, height, 
-                                     bytes_per_line, QImage.Format.Format_BGR888)
-                        pixmap = QPixmap.fromImage(qimg)
-                        pixmap = pixmap.scaled(
-                            self.camera_label.width(), 
-                            self.camera_label.height(),
-                            Qt.AspectRatioMode.KeepAspectRatio
-                        )
-                        self.camera_label.setPixmap(pixmap)
-                        
-                        # Tiếp tục với phát hiện barcode
-                        decode_objects = decode(processed_image)
-                    else:
-                        # Nếu xử lý bằng Vision Master thất bại, thông báo lỗi và sử dụng xử lý mặc định
-                        self.result_view.setText(f"Vision Master processing failed:\n{message}\nFalling back to default processing")
-                        self.result_view.setStyleSheet("color: orange; font-weight: bold;")
-                        QApplication.processEvents()
-                        decode_objects = self.label_checker.process_image(image_path)
-                else:
-                    # Sử dụng xử lý mặc định
-                    decode_objects = self.label_checker.process_image(image_path)
-                
-                # Update result based on barcode detection
-                if decode_objects:
-                    # Get the first barcode
-                    barcode = decode_objects[0]
-                    barcode_data = barcode.data.decode('utf-8')
-                    barcode_type = barcode.type
-                    
-                    # Display detected barcode and type
-                    barcode_info = f"Detected: {barcode_data}\nType: {barcode_type}"
-                    
-                    # Get expected barcode (using S/N for simplicity)
-                    expected_barcode = self.sn_input.text()
-                    
-                    # Verify the barcode
-                    success, message = self.label_checker.verify_barcode(barcode_data, expected_barcode)
-                    
-                    # Update result
-                    if success:
-                        self.result_view.setText(f"PASS\n{barcode_info}")
-                        self.result_view.setStyleSheet("color: green; font-weight: bold;")
-                        self.pass_count += 1
-                    else:
-                        self.result_view.setText(f"FAIL - Mismatch\n{barcode_info}")
-                        self.result_view.setStyleSheet("color: red; font-weight: bold;")
-                        self.fail_count += 1
-                    
-                    # Draw the barcode on the original image
-                    marked_image = self.label_checker.draw_barcode_locations(
-                        self.label_checker.last_image, decode_objects)
-                    
-                    # Convert to QPixmap and display
-                    height, width, channel = marked_image.shape
-                    bytes_per_line = 3 * width
-                    qimg = QImage(marked_image.data, width, height, 
-                                 bytes_per_line, QImage.Format.Format_BGR888)
-                    pixmap = QPixmap.fromImage(qimg)
-                    pixmap = pixmap.scaled(
-                        self.camera_label.width(), 
-                        self.camera_label.height(),
-                        Qt.AspectRatioMode.KeepAspectRatio
-                    )
-                    self.camera_label.setPixmap(pixmap)
-                    
-                else:
-                    # No barcode detected
-                    self.result_view.setText("FAIL\nNo barcode detected")
-                    self.result_view.setStyleSheet("color: red; font-weight: bold;")
-                    self.fail_count += 1
-                
-                # Update scan count and stats
-                self.scan_count += 1
-                self.update_stats()
-                
-                # Add to log
-                self.add_to_log(
-                    sn=self.sn_input.text(),
-                    model=self.model_input.text(),
-                    result=self.result_view.text().split('\n')[0]  # First line of result
-                )
-                
-                # Update teaching status
-                if success:
-                    self.teaching_status_label.setText("PASS")
-                    self.teaching_status_label.setStyleSheet("color: green; font-weight: bold;")
-                else:
-                    self.teaching_status_label.setText("FAIL")
-                    self.teaching_status_label.setStyleSheet("color: red; font-weight: bold;")
-                
-            else:
-                self.result_view.setText("Error loading image")
-                self.result_view.setStyleSheet("color: red; font-weight: bold;")
-                
-        except Exception as e:
-            self.result_view.setText(f"Error processing image:\n{str(e)}")
-            self.result_view.setStyleSheet("color: red; font-weight: bold;")
 
     def stop_inspection(self):
         """Stop the inspection process"""
+        self.is_running = False
         self.camera_timer.stop()
         self.result_view.setText("System stopped")
         self.result_view.setStyleSheet("color: blue; font-weight: bold;")
 
     def reset_system(self):
         """Reset the system to initial state"""
+        self.is_running = False
+        self.camera_timer.stop()
         self.sn_input.clear()
         self.model_input.clear()
         self.camera_label.setText("Camera View Online")
@@ -827,8 +637,9 @@ class LinePacking(QMainWindow):
         # Clear log
         self.log_table.setRowCount(0)
         
-        # Stop camera timer
-        self.camera_timer.stop()
+        # Reset variables
+        self.current_image_path = None
+        self.original_pixmap = None
         
         # Reset teaching display
         self.teaching_model_label.setText("Not set")
@@ -901,22 +712,18 @@ class LinePacking(QMainWindow):
         self.auto_btn.setStyleSheet("background-color: #D3D3D3; font-weight: bold;")
         # In a real app, you would show a settings panel here
 
-    def load_sol_file(self):
-        """Load the UPDATE.sol file"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select SOL Config File", "", "SOL Files (*.sol)"
-        )
+    def get_pass_rate(self):
+        """Calculate pass rate percentage"""
+        if self.scan_count == 0:
+            return "0.0"
+        return f"{(self.pass_count / self.scan_count) * 100:.1f}"
         
-        if file_path:
-            try:
-                success = self.vision_master.load_sol_file(file_path)
-                if success:
-                    self.sol_file_loaded = True
-                    QMessageBox.information(self, "Success", "SOL file loaded successfully")
-                else:
-                    QMessageBox.warning(self, "Error", "Failed to load SOL file")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Error loading SOL file: {str(e)}")
+    def update_stats(self):
+        """Update the statistics display with detailed information"""
+        self.ok_count_label.setText(str(self.pass_count))
+        self.ng_count_label.setText(str(self.fail_count))
+        self.total_count_label.setText(str(self.scan_count))
+        self.rate_label.setText(f"{self.get_pass_rate()}%")
 
     def open_teaching_config(self):
         """Open teaching configuration dialog"""
@@ -962,223 +769,307 @@ class LinePacking(QMainWindow):
         check_type.addItems(["Barcode 1D", "QR Code", "Data Matrix", "Label Text"])
         check_layout.addRow("Loại kiểm tra:", check_type)
         
-        expected_value = QLineEdit()
-        check_layout.addRow("Giá trị mong đợi:", expected_value)
+        match_mode = QComboBox()
+        match_mode.addItems(["Chính xác 100%", "Phần đầu giống nhau", "Chứa chuỗi"])
+        check_layout.addRow("Kiểu so sánh:", match_mode)
         
-        match_type = QComboBox()
-        match_type.addItems(["Exact Match", "Contains", "Starts With", "Ends With", "Regex"])
-        check_layout.addRow("Kiểu so khớp:", match_type)
+        # Thêm checkbox cho các tùy chọn nâng cao
+        enable_preprocessing = QCheckBox("Bật tiền xử lý ảnh")
+        check_layout.addRow("Xử lý ảnh:", enable_preprocessing)
+        
+        timeout_value = QSpinBox()
+        timeout_value.setRange(1, 30)
+        timeout_value.setValue(5)
+        timeout_value.setSuffix(" giây")
+        check_layout.addRow("Thời gian timeout:", timeout_value)
         
         general_layout.addWidget(check_group)
         
-        # Thêm các thông số timeout và retry
-        timeout_group = QGroupBox("Thiết lập thời gian")
-        timeout_layout = QFormLayout(timeout_group)
+        # Các nút tác vụ
+        action_layout = QHBoxLayout()
+        save_btn = QPushButton("Lưu cấu hình")
+        test_btn = QPushButton("Kiểm tra")
+        reset_config_btn = QPushButton("Đặt lại")
         
-        timeout_spin = QSpinBox()
-        timeout_spin.setRange(1, 30)
-        timeout_spin.setValue(5)
-        timeout_spin.setSuffix(" seconds")
-        timeout_layout.addRow("Timeout:", timeout_spin)
+        action_layout.addWidget(save_btn)
+        action_layout.addWidget(test_btn)
+        action_layout.addWidget(reset_config_btn)
         
-        retry_spin = QSpinBox()
-        retry_spin.setRange(0, 5)
-        retry_spin.setValue(2)
-        timeout_layout.addRow("Số lần thử lại:", retry_spin)
+        general_layout.addLayout(action_layout)
         
-        general_layout.addWidget(timeout_group)
+        # Tab 2: Thiết lập vùng ảnh
+        image_area_tab = QWidget()
+        image_area_layout = QVBoxLayout(image_area_tab)
         
-        # Thêm tab vào tab widget
-        tab_widget.addTab(general_tab, "Cấu hình chung")
+        # Hiển thị ảnh mẫu
+        image_preview_group = QGroupBox("Xem trước ảnh")
+        image_preview_layout = QVBoxLayout(image_preview_group)
         
-        # Tab 2: Cấu hình vùng ROI
-        roi_tab = QWidget()
-        roi_layout = QVBoxLayout(roi_tab)
+        image_preview = QLabel("Chưa có ảnh mẫu")
+        image_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image_preview.setStyleSheet("background-color: #e0e0e0; min-height: 300px;")
+        image_preview_layout.addWidget(image_preview)
         
-        # Preview hình ảnh và vùng ROI
-        preview_group = QGroupBox("Preview và chọn vùng ROI")
-        preview_layout = QVBoxLayout(preview_group)
+        # Các nút điều khiển ảnh
+        image_control_layout = QHBoxLayout()
+        load_sample_btn = QPushButton("Tải ảnh mẫu")
+        capture_sample_btn = QPushButton("Chụp ảnh mẫu")
+        clear_sample_btn = QPushButton("Xóa ảnh mẫu")
         
-        # Preview image placeholder
-        preview_label = QLabel("Hình ảnh preview")
-        preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        preview_label.setStyleSheet("background-color: black; color: white;")
-        preview_label.setMinimumSize(600, 400)
-        preview_layout.addWidget(preview_label)
+        image_control_layout.addWidget(load_sample_btn)
+        image_control_layout.addWidget(capture_sample_btn)
+        image_control_layout.addWidget(clear_sample_btn)
         
-        # ROI controls
-        roi_controls = QHBoxLayout()
-        roi_controls.addWidget(QLabel("X:"))
+        image_preview_layout.addLayout(image_control_layout)
+        image_area_layout.addWidget(image_preview_group)
+        
+        # Thiết lập vùng kiểm tra
+        roi_group = QGroupBox("Thiết lập vùng ROI")
+        roi_layout = QFormLayout(roi_group)
+        
+        roi_type = QComboBox()
+        roi_type.addItems(["Vùng chữ nhật", "Vùng đa giác", "Toàn bộ ảnh"])
+        roi_layout.addRow("Kiểu vùng ROI:", roi_type)
+        
+        roi_edit_btn = QPushButton("Vẽ vùng ROI")
+        roi_layout.addRow("Chỉnh sửa ROI:", roi_edit_btn)
+        
+        # Thêm các tham số của ROI
+        roi_params_layout = QHBoxLayout()
+        
+        # X position
         roi_x = QSpinBox()
         roi_x.setRange(0, 1000)
-        roi_controls.addWidget(roi_x)
+        roi_x.setSuffix(" px")
         
-        roi_controls.addWidget(QLabel("Y:"))
+        # Y position
         roi_y = QSpinBox()
         roi_y.setRange(0, 1000)
-        roi_controls.addWidget(roi_y)
+        roi_y.setSuffix(" px")
         
-        roi_controls.addWidget(QLabel("Width:"))
+        # Width
         roi_width = QSpinBox()
         roi_width.setRange(10, 1000)
-        roi_width.setValue(200)
-        roi_controls.addWidget(roi_width)
+        roi_width.setSuffix(" px")
         
-        roi_controls.addWidget(QLabel("Height:"))
+        # Height
         roi_height = QSpinBox()
         roi_height.setRange(10, 1000)
-        roi_height.setValue(100)
-        roi_controls.addWidget(roi_height)
+        roi_height.setSuffix(" px")
         
-        preview_layout.addLayout(roi_controls)
+        roi_params_layout.addWidget(QLabel("X:"))
+        roi_params_layout.addWidget(roi_x)
+        roi_params_layout.addWidget(QLabel("Y:"))
+        roi_params_layout.addWidget(roi_y)
+        roi_params_layout.addWidget(QLabel("W:"))
+        roi_params_layout.addWidget(roi_width)
+        roi_params_layout.addWidget(QLabel("H:"))
+        roi_params_layout.addWidget(roi_height)
         
-        # Capture test image button
-        capture_test_btn = QPushButton("Chụp ảnh test")
-        capture_test_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
-        preview_layout.addWidget(capture_test_btn)
+        roi_layout.addRow("Tọa độ ROI:", roi_params_layout)
         
-        roi_layout.addWidget(preview_group)
+        image_area_layout.addWidget(roi_group)
         
-        tab_widget.addTab(roi_tab, "Cấu hình vùng ROI")
+        # Tab 3: Thiết lập kết nối
+        connection_tab = QWidget()
+        connection_layout = QVBoxLayout(connection_tab)
         
-        # Tab 3: Cấu hình xử lý ảnh
-        image_proc_tab = QWidget()
-        image_proc_layout = QVBoxLayout(image_proc_tab)
+        # Thiết lập kết nối COM
+        com_group = QGroupBox("Thiết lập cổng COM")
+        com_layout = QFormLayout(com_group)
         
-        preprocessing_group = QGroupBox("Tiền xử lý ảnh")
-        preprocessing_layout = QVBoxLayout(preprocessing_group)
+        com_port = QComboBox()
+        com_port.addItems(["COM1", "COM2", "COM3", "COM4", "COM5", "COM6"])
+        com_port.setCurrentText("COM4")  # Default to COM4
+        com_layout.addRow("Cổng COM:", com_port)
         
-        # Các checkbox cho preprocessing
-        grayscale_check = QCheckBox("Chuyển đổi sang ảnh xám")
-        grayscale_check.setChecked(True)
-        preprocessing_layout.addWidget(grayscale_check)
+        baudrate = QComboBox()
+        baudrate.addItems(["9600", "19200", "38400", "57600", "115200"])
+        baudrate.setCurrentText("9600")
+        com_layout.addRow("Baudrate:", baudrate)
         
-        blur_check = QCheckBox("Áp dụng Gaussian Blur")
-        blur_check.setChecked(True)
-        preprocessing_layout.addWidget(blur_check)
+        # Thêm nút kiểm tra kết nối
+        test_connection_btn = QPushButton("Kiểm tra kết nối")
+        test_connection_btn.clicked.connect(lambda: self.test_connection(com_port.currentText(), int(baudrate.currentText())))
+        com_layout.addRow("Kiểm tra:", test_connection_btn)
         
-        # Blur settings
-        blur_settings = QHBoxLayout()
-        blur_settings.addWidget(QLabel("Kernel Size:"))
-        blur_kernel = QComboBox()
-        blur_kernel.addItems(["3x3", "5x5", "7x7", "9x9"])
-        blur_settings.addWidget(blur_kernel)
-        blur_settings.addStretch()
-        preprocessing_layout.addLayout(blur_settings)
+        connection_layout.addWidget(com_group)
         
-        threshold_check = QCheckBox("Áp dụng Adaptive Threshold")
-        threshold_check.setChecked(True)
-        preprocessing_layout.addWidget(threshold_check)
+        # Thiết lập thư mục lưu trữ
+        storage_group = QGroupBox("Thiết lập lưu trữ")
+        storage_layout = QFormLayout(storage_group)
         
-        # Threshold settings
-        threshold_settings = QHBoxLayout()
-        threshold_settings.addWidget(QLabel("Block Size:"))
-        block_size = QComboBox()
-        block_size.addItems(["3", "5", "7", "9", "11", "13"])
-        block_size.setCurrentText("11")
-        threshold_settings.addWidget(block_size)
+        save_images = QCheckBox("Lưu ảnh kiểm tra")
+        save_images.setChecked(True)
+        storage_layout.addRow("Lưu ảnh:", save_images)
         
-        threshold_settings.addWidget(QLabel("C:"))
-        c_value = QSpinBox()
-        c_value.setRange(-10, 10)
-        c_value.setValue(2)
-        threshold_settings.addWidget(c_value)
-        threshold_settings.addStretch()
-        preprocessing_layout.addLayout(threshold_settings)
+        image_path = QLineEdit(r"C:\Users\a\Desktop\Work\VisionCheckLabel\image\Result")
+        browse_image_path_btn = QPushButton("Browse...")
+        image_path_layout = QHBoxLayout()
+        image_path_layout.addWidget(image_path)
+        image_path_layout.addWidget(browse_image_path_btn)
+        storage_layout.addRow("Thư mục ảnh:", image_path_layout)
         
-        image_proc_layout.addWidget(preprocessing_group)
+        save_results = QCheckBox("Lưu kết quả")
+        save_results.setChecked(True)
+        storage_layout.addRow("Lưu kết quả:", save_results)
         
-        # Advanced options
-        advanced_group = QGroupBox("Tùy chọn nâng cao")
-        advanced_layout = QVBoxLayout(advanced_group)
+        result_path = QLineEdit(r"C:\Users\a\Desktop\Work\VisionCheckLabel\result")
+        browse_result_path_btn = QPushButton("Browse...")
+        result_path_layout = QHBoxLayout()
+        result_path_layout.addWidget(result_path)
+        result_path_layout.addWidget(browse_result_path_btn)
+        storage_layout.addRow("Thư mục kết quả:", result_path_layout)
         
-        advanced_check = QCheckBox("Sử dụng cài đặt Vision Master (.sol)")
-        advanced_layout.addWidget(advanced_check)
+        connection_layout.addWidget(storage_group)
         
-        sol_path = QLineEdit()
-        sol_path.setReadOnly(True)
-        sol_path.setPlaceholderText("Đường dẫn đến file .sol")
-        sol_browse_btn = QPushButton("Browse...")
-        sol_path_layout = QHBoxLayout()
-        sol_path_layout.addWidget(sol_path)
-        sol_path_layout.addWidget(sol_browse_btn)
-        advanced_layout.addLayout(sol_path_layout)
+        # Thêm các tab vào tab widget
+        tab_widget.addTab(general_tab, "Cấu hình chung")
+        tab_widget.addTab(image_area_tab, "Thiết lập vùng ảnh")
+        tab_widget.addTab(connection_tab, "Kết nối & Lưu trữ")
         
-        image_proc_layout.addWidget(advanced_group)
-        
-        # Connection settings - Thay đổi từ IP/Port sang Serial Port
-        connection_group = QGroupBox("Cài đặt kết nối Serial")
-        connection_layout = QFormLayout(connection_group)
-        
-        serial_port_combo = QComboBox()
-        # Lấy danh sách cổng COM có sẵn
-        available_ports = [f"COM{i}" for i in range(1, 10)]  # Có thể thay bằng serial.tools.list_ports
-        serial_port_combo.addItems(available_ports)
-        if self.serial_port in available_ports:
-            serial_port_combo.setCurrentText(self.serial_port)
-        connection_layout.addRow("Cổng COM:", serial_port_combo)
-        
-        baudrate_combo = QComboBox()
-        baudrate_combo.addItems(["9600", "19200", "38400", "57600", "115200"])
-        baudrate_combo.setCurrentText(str(self.serial_baudrate))
-        connection_layout.addRow("Baudrate:", baudrate_combo)
-        
-        image_proc_layout.addWidget(connection_group)
-        
-        tab_widget.addTab(image_proc_tab, "Xử lý ảnh")
-        
-        # Thêm tab widget vào layout chính
         main_layout.addWidget(tab_widget)
         
-        # Buttons at the bottom
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
+        # Thêm các nút tác vụ cuối cùng
+        final_buttons_layout = QHBoxLayout()
+        apply_btn = QPushButton("Áp dụng")
+        apply_btn.setStyleSheet("background-color: #90EE90; font-weight: bold;")
+        cancel_btn = QPushButton("Hủy bỏ")
         
-        test_btn = QPushButton("Test")
-        test_btn.setStyleSheet("background-color: #008CBA; color: white; font-weight: bold;")
-        button_layout.addWidget(test_btn)
+        final_buttons_layout.addWidget(apply_btn)
+        final_buttons_layout.addWidget(cancel_btn)
         
-        save_btn = QPushButton("Lưu cấu hình")
-        save_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
-        button_layout.addWidget(save_btn)
+        main_layout.addLayout(final_buttons_layout)
         
-        cancel_btn = QPushButton("Hủy")
-        button_layout.addWidget(cancel_btn)
-        
-        main_layout.addLayout(button_layout)
-        
-        # Connect buttons
+        # Kết nối các sự kiện
         cancel_btn.clicked.connect(teaching_dialog.reject)
+        browse_btn.clicked.connect(lambda: self.browse_file(model_path))
+        browse_image_path_btn.clicked.connect(lambda: self.browse_folder(image_path))
+        browse_result_path_btn.clicked.connect(lambda: self.browse_folder(result_path))
+        apply_btn.clicked.connect(teaching_dialog.accept)
         
-        # Show the dialog
-        teaching_dialog.exec()
+        # Thêm sự kiện cho các nút khác
+        load_sample_btn.clicked.connect(lambda: self.load_sample_image(image_preview))
+        capture_sample_btn.clicked.connect(lambda: self.capture_sample_image(image_preview))
+        clear_sample_btn.clicked.connect(lambda: self.clear_sample_image(image_preview))
+        roi_edit_btn.clicked.connect(lambda: self.edit_roi(image_preview, roi_x, roi_y, roi_width, roi_height))
+        
+        # Hiển thị dialog
+        if teaching_dialog.exec() == QDialog.DialogCode.Accepted:
+            # Cập nhật các thông tin cấu hình
+            self.teaching_model_label.setText(model_selector.currentText())
+            self.teaching_area_label.setText(f"{roi_type.currentText()}")
+            self.teaching_settings_label.setText(f"{check_type.currentText()}")
+            
+            # Cập nhật cấu hình COM
+            self.serial_port = com_port.currentText()
+            self.serial_baudrate = int(baudrate.currentText())
+            
+            # Lưu cấu hình ROI
+            self.roi_settings = {
+                'type': roi_type.currentText(),
+                'x': roi_x.value(),
+                'y': roi_y.value(), 
+                'width': roi_width.value(),
+                'height': roi_height.value()
+            }
+            
+            # Lưu cấu hình đường dẫn
+            self.image_folder = image_path.text()
+            self.result_folder = result_path.text()
+            
+            # Hiển thị thông báo thành công
+            QMessageBox.information(self, "Cập nhật cấu hình", "Cấu hình teaching đã được cập nhật thành công!")
+        
+    def test_connection(self, port, baudrate):
+        """Kiểm tra kết nối cổng COM"""
+        try:
+            # Hiển thị thông báo đang kiểm tra
+            QMessageBox.information(self, "Đang kiểm tra", f"Đang kiểm tra kết nối với {port} ở baudrate {baudrate}...\nVui lòng đợi.")
+            
+            # Thử kết nối với cổng COM
+            with serial.Serial(port, baudrate, timeout=2) as ser:
+                # Nếu mở được cổng COM, hiển thị thông báo thành công
+                QMessageBox.information(self, "Kết nối thành công", f"Đã kết nối thành công với {port} ở baudrate {baudrate}!")
+        except serial.SerialException as e:
+            # Nếu không mở được cổng COM, hiển thị thông báo lỗi
+            QMessageBox.critical(self, "Lỗi kết nối", f"Không thể kết nối với {port}: {str(e)}")
+        except Exception as e:
+            # Lỗi khác
+            QMessageBox.critical(self, "Lỗi", f"Đã xảy ra lỗi: {str(e)}")
+    
+    def load_sample_image(self, preview_label):
+        """Tải ảnh mẫu từ file"""
+        try:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Chọn ảnh mẫu", "", "Image Files (*.png *.jpg *.jpeg *.bmp)")
+                
+            if file_path:
+                # Tải và hiển thị ảnh
+                pixmap = QPixmap(file_path)
+                if not pixmap.isNull():
+                    # Hiển thị ảnh đã tải lên label
+                    pixmap = pixmap.scaled(preview_label.width(), preview_label.height(),
+                                        Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation)
+                    preview_label.setPixmap(pixmap)
+                    preview_label.setProperty("image_path", file_path)  # Lưu đường dẫn ảnh
+                else:
+                    QMessageBox.warning(self, "Lỗi", "Không thể tải ảnh đã chọn.")
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi", f"Đã xảy ra lỗi khi tải ảnh: {str(e)}")
+    
+    def capture_sample_image(self, preview_label):
+        """Chụp ảnh mẫu từ camera"""
+        try:
+            # Hiển thị thông báo chức năng chưa khả dụng
+            QMessageBox.information(self, "Chức năng chưa khả dụng", 
+                                  "Chức năng chụp ảnh mẫu đang được phát triển.\n"
+                                  "Vui lòng sử dụng chức năng tải ảnh mẫu.")
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi", f"Đã xảy ra lỗi: {str(e)}")
+    
+    def clear_sample_image(self, preview_label):
+        """Xóa ảnh mẫu đã tải"""
+        try:
+            preview_label.setPixmap(QPixmap())  # Xóa pixmap
+            preview_label.setText("Chưa có ảnh mẫu")  # Thiết lập lại text
+            preview_label.setProperty("image_path", None)  # Xóa đường dẫn ảnh
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi", f"Đã xảy ra lỗi khi xóa ảnh: {str(e)}")
+    
+    def edit_roi(self, preview_label, roi_x, roi_y, roi_width, roi_height):
+        """Mở công cụ chỉnh sửa ROI"""
+        try:
+            # Kiểm tra xem đã có ảnh mẫu chưa
+            if not preview_label.pixmap() or preview_label.pixmap().isNull():
+                QMessageBox.warning(self, "Thiếu ảnh mẫu", "Vui lòng tải ảnh mẫu trước khi thiết lập ROI.")
+                return
+            
+            # Hiển thị thông báo chức năng đang được phát triển
+            QMessageBox.information(self, "Chức năng đang phát triển", 
+                                   "Công cụ vẽ ROI đang được phát triển.\n"
+                                   "Bạn có thể nhập trực tiếp các tọa độ ROI.")
+                                   
+            # Trong phiên bản đầy đủ, mở cửa sổ vẽ ROI trên ảnh
+            # và cập nhật các giá trị roi_x, roi_y, roi_width, roi_height
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi", f"Đã xảy ra lỗi khi chỉnh sửa ROI: {str(e)}")
+        
+    def browse_file(self, line_edit):
+        """Browse for a file and set the path to the line edit"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Chọn file cấu hình", "", "All Files (*);;JSON Files (*.json)")
+        if file_path:
+            line_edit.setText(file_path)
+            
+    def browse_folder(self, line_edit):
+        """Browse for a folder and set the path to the line edit"""
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "Chọn thư mục", "")
+        if folder_path:
+            line_edit.setText(folder_path)
 
-    def save_teaching_config(self, dialog, port, baudrate):
-        """Lưu cấu hình teaching và thông tin kết nối"""
-        self.serial_port = port
-        self.serial_baudrate = int(baudrate)
-        self.statusBar().showMessage(f"Config saved - Serial Port: {self.serial_port}, Baudrate: {self.serial_baudrate}")
-        dialog.accept()
-        
-    def test_comp4_connection(self, port, baudrate):
-        """Test kết nối serial đến comp4"""
-        self.result_view.setText("Testing serial connection...\nPlease wait...")
-        self.result_view.setStyleSheet("color: orange; font-weight: bold;")
-        QApplication.processEvents()
-        
-        # Tạo và chạy worker thread
-        self.test_worker = SerialTriggerWorker(port, int(baudrate))
-        self.test_worker.finished.connect(self.handle_test_result)
-        self.test_worker.start()
-
-    def handle_test_result(self, success, message):
-        """Handle the result of the test connection"""
-        if success:
-            self.result_view.setText(f"Serial connection test successful: {message}")
-            self.result_view.setStyleSheet("color: green; font-weight: bold;")
-        else:
-            self.result_view.setText(f"Serial connection test failed: {message}")
-            self.result_view.setStyleSheet("color: red; font-weight: bold;")
 
 def main():
     app = QApplication(sys.argv)
@@ -1186,5 +1077,5 @@ def main():
     window.show()
     sys.exit(app.exec())
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
