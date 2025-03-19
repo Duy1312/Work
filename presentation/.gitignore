@@ -1,0 +1,38 @@
+# Giữ thư mục image nhưng bỏ qua các file bên trong
+image/*
+!image/.gitkeep
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.nox/
+.coverage
+.hypothesis/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+wheels/
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+env/
+.env/
+
+# Log files
+*.log
+
+# Editor directories and files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
