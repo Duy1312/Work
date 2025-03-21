@@ -190,6 +190,10 @@ class LinePacking(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         
+        # Đặt spacing và margins nhỏ hơn để tận dụng không gian
+        main_layout.setSpacing(5)
+        main_layout.setContentsMargins(5, 5, 5, 5)
+        
         # Top section with S/N, Model, Version
         top_frame = QFrame()
         top_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
@@ -245,7 +249,7 @@ class LinePacking(QMainWindow):
         self.camera_label = QLabel("Camera View Online")
         self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.camera_label.setStyleSheet("color: blue; font-weight: bold; font-size: 14px; border: none;")
-        self.camera_label.setMinimumSize(640, 480)
+        self.camera_label.setMinimumSize(480, 360)  # Giảm kích thước tối thiểu
         camera_layout.addWidget(self.camera_label)
         
         main_content.addWidget(camera_frame, 2)  # Takes 2/3 of width
@@ -350,21 +354,29 @@ class LinePacking(QMainWindow):
         
         self.image_view = QLabel()
         self.image_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_view.setMinimumSize(300, 220)
+        self.image_view.setMinimumSize(240, 180)  # Giảm kích thước tối thiểu
         self.image_view.setStyleSheet("border: none;")  # Loại bỏ viền trong label
         image_layout.addWidget(self.image_view)
         
         views_layout.addWidget(image_frame, 2)
         
         # Đảm bảo các widget quan trọng có kích thước tối thiểu hợp lý
-        self.image_view.setMinimumSize(300, 220)
-        self.camera_label.setMinimumSize(640, 480)
-        
-        # Thiết lập policy mở rộng để đảm bảo các widget mở rộng đúng cách khi full screen
+        # và policy mở rộng để đảm bảo hiển thị đúng ở chế độ full screen
         size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        size_policy.setHorizontalStretch(1)
+        size_policy.setVerticalStretch(1)
+        
         self.image_view.setSizePolicy(size_policy)
         self.camera_label.setSizePolicy(size_policy)
-
+        
+        # Đặt policy cho các frame chứa để đảm bảo chúng mở rộng đúng cách
+        camera_frame.setSizePolicy(size_policy)
+        image_frame.setSizePolicy(size_policy)
+        
+        # Thiết lập khoảng cách nhỏ hơn giữa các thành phần
+        views_layout.setSpacing(5)
+        right_layout.setSpacing(5)
+        
         # Right view - Results (Chỉ hiển thị OK, NG, Waiting)
         result_frame = QFrame()
         result_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
@@ -427,20 +439,26 @@ class LinePacking(QMainWindow):
         
         right_layout.addWidget(teaching_frame)
         
-        # Log process display
+        # Log process display với khả năng cuộn
         log_frame = QFrame()
         log_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
         log_layout = QVBoxLayout(log_frame)
         log_layout.setContentsMargins(10, 10, 10, 10)  # Thêm padding bên trong
         
-        # Tạo bảng log
+        # Tạo bảng log với khả năng cuộn
         self.log_table = QTableWidget()
         self.log_table.setColumnCount(5)
         self.log_table.setHorizontalHeaderLabels(["Thời gian", "S/N", "Model", "Kết quả", "Thời gian xử lý"])
         self.log_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.log_table.setMinimumHeight(150)
+        self.log_table.setMinimumHeight(100)  # Giảm chiều cao tối thiểu
+        self.log_table.setMaximumHeight(150)  # Thêm chiều cao tối đa
         self.log_table.setStyleSheet("border: none;")  # Loại bỏ viền của bảng
         log_layout.addWidget(self.log_table)
+        
+        # Đặt policy cho log_frame để có thể co lại khi cần
+        log_size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        log_size_policy.setVerticalStretch(0)  # Ưu tiên thấp cho việc mở rộng theo chiều dọc
+        log_frame.setSizePolicy(log_size_policy)
         
         right_layout.addWidget(log_frame)
         
