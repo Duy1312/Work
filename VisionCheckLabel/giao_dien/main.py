@@ -5,8 +5,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QLineEd
                              QDoubleSpinBox, QGroupBox, QRadioButton, QScrollArea,
                              QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
                              QTreeWidget, QTreeWidgetItem, QMessageBox, QDialog,
-                             QFormLayout, QSplitter)
-from PyQt6.QtCore import Qt, QRect, QTimer, QThread, pyqtSignal, pyqtSlot
+                             QFormLayout, QSplitter, QSizePolicy)
+from PyQt6.QtCore import Qt, QRect, QTimer, QThread, pyqtSignal, pyqtSlot, QEvent
 from PyQt6.QtGui import QFont, QPixmap, QImage
 import cv2
 import numpy as np
@@ -18,23 +18,6 @@ import subprocess
 import json
 import serial  # Thêm thư viện pyserial
 import time
-
-
-class LabelChecker:
-    """Class to handle label barcode checking functionality"""
-    
-    def __init__(self):
-        self.last_image = None
-    
-    def verify_barcode(self, detected_code, expected_code):
-        """Verify if detected barcode matches expected value"""
-        if not detected_code:
-            return False, "No barcode detected"
-            
-        if detected_code == expected_code:
-            return True, "PASS"
-        else:
-            return False, f"FAIL - Mismatch"
 
 
 class SerialTriggerWorker(QThread):
@@ -74,21 +57,22 @@ class SerialTriggerWorker(QThread):
 class LinePacking(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.label_checker = LabelChecker()
         self.current_image_path = None
         self.scan_count = 0
         self.pass_count = 0
         self.fail_count = 0
         
+        
         # Cấu hình kết nối serial
         self.serial_port = "COM4"  # Đảm bảo kết nối với COM4
         self.serial_baudrate = 9600
         
+        self.serial_baudrate
         # Biến để theo dõi trạng thái hoạt động
         self.is_running = False
         self.original_pixmap = None  # Để lưu trữ ảnh gốc
         
-        self.init_ui()  # Đổi tên từ initUI thành init_ui để tuân theo quy ước Python
+        self.initUI()  # Đổi tên từ initUI thành init_ui để tuân theo quy ước Python
 
         # Tạo timer nhưng chưa khởi động
         self.camera_timer = QTimer(self)
@@ -125,33 +109,79 @@ class LinePacking(QMainWindow):
     def resizeEvent(self, event):
         """Xử lý sự kiện thay đổi kích thước cửa sổ"""
         super().resizeEvent(event)
-        # Cập nhật hiển thị ảnh nếu có
-        if hasattr(self, 'original_pixmap') and self.original_pixmap and not self.original_pixmap.isNull():
-            self.update_image_displays()
-    
+        # Tăng thời gian trễ để đảm bảo UI đã hoàn toàn cập nhật
+        QTimer.singleShot(200, self.update_image_displays)
+        # Lưu lại trạng thái kích thước cửa sổ hiện tại
+        self.current_window_state = self.windowState()
+
+    def showEvent(self, event):
+        """Xử lý khi cửa sổ được hiển thị"""
+        super().showEvent(event)
+        # Đảm bảo ảnh được cập nhật khi cửa sổ hiển thị
+        QTimer.singleShot(100, self.update_image_displays)
     def update_image_displays(self):
         """Cập nhật hiển thị ảnh theo kích thước hiện tại của các label"""
-        if self.original_pixmap and not self.original_pixmap.isNull():
-            # Cập nhật camera view
-            camera_pixmap = self.original_pixmap.scaled(
-                self.camera_label.width(), 
-                self.camera_label.height(),
-                Qt.AspectRatioMode.KeepAspectRatio, 
-                Qt.TransformationMode.SmoothTransformation  # Sử dụng biến đổi mượt hơn
-            )
-            self.camera_label.setPixmap(camera_pixmap)
-            
-            # Cập nhật image view
-            image_pixmap = self.original_pixmap.scaled(
-                self.image_view.width(), 
-                self.image_view.height(),
-                Qt.AspectRatioMode.KeepAspectRatio, 
-                Qt.TransformationMode.SmoothTransformation  # Sử dụng biến đổi mượt hơn
-            )
-            self.image_view.setPixmap(image_pixmap)
-
-    def init_ui(self):
-        # Set window title and size
+        if not hasattr(self, 'original_pixmap') or self.original_pixmap is None or self.original_pixmap.isNull():
+            return
+        
+        # Đảm bảo các label đã được cập nhật kích thước
+        QApplication.processEvents()
+        
+        # Cập nhật camera view
+        camera_width = self.camera_label.width()
+        camera_height = self.camera_label.height()
+        camera_pixmap = self.original_pixmap.scaled(
+            camera_width, 
+            camera_height,
+            Qt.AspectRatioMode.KeepAspectRatio, 
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.camera_label.setPixmap(camera_pixmap)
+        self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # Cập nhật image view
+        view_width = self.image_view.width()
+        view_height = self.image_view.height()
+        
+        # Đảm bảo kích thước khung nhìn là hợp lệ
+        if view_width <= 0 or view_height <= 0:
+            QTimer.singleShot(100, self.update_image_displays)  # Thử lại sau
+            return
+        
+        # Tính toán kích thước tối đa cho ảnh mà không bị cắt
+        max_dimension = min(view_width, view_height)
+        
+        # Tính toán tỷ lệ giữa chiều rộng và chiều cao của ảnh gốc
+        if self.original_pixmap.height() > 0:  # Tránh chia cho 0
+            original_ratio = self.original_pixmap.width() / self.original_pixmap.height()
+        else:
+            original_ratio = 1.0
+        
+        # Xác định kích thước mới dựa trên tỷ lệ ảnh gốc
+        if original_ratio > 1.0:  # Ảnh ngang
+            new_width = max_dimension
+            new_height = int(max_dimension / original_ratio)
+        else:  # Ảnh dọc hoặc vuông
+            new_height = max_dimension
+            new_width = int(max_dimension * original_ratio)
+        
+        # Scale ảnh với kích thước đã tính
+        image_pixmap = self.original_pixmap.scaled(
+            new_width,
+            new_height,
+            Qt.AspectRatioMode.KeepAspectRatio, 
+            Qt.TransformationMode.SmoothTransformation
+        )
+        
+        # Đặt pixmap và căn giữa
+        self.image_view.setPixmap(image_pixmap)
+        self.image_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # In thông tin debug
+        print(f"Image view size: {view_width}x{view_height}, Scaled image: {new_width}x{new_height}")
+    def initUI(self):
+        """Khởi tạo giao diện người dùng"""
+        # Thiết lập cửa sổ chính
         self.setWindowTitle('UI Vision in Line Packing RU,OCDU,Acessory')
         self.setGeometry(100, 100, 1200, 800)
         
@@ -162,22 +192,27 @@ class LinePacking(QMainWindow):
         
         # Top section with S/N, Model, Version
         top_frame = QFrame()
-        top_frame.setStyleSheet("border: 1px solid orange;")
+        top_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
         top_layout = QHBoxLayout(top_frame)
+        top_layout.setContentsMargins(10, 10, 10, 10)  # Thêm padding bên trong để nội dung không chạm viền
         
-        # S/N input
-        top_layout.addWidget(QLabel("S/N"))
+        # S/N input - không có viền
+        sn_label = QLabel("S/N")
+        sn_label.setStyleSheet("border: none;")  # Đảm bảo label không có viền
+        top_layout.addWidget(sn_label)
         self.sn_input = QLineEdit()
         top_layout.addWidget(self.sn_input)
         
-        # Model input
-        top_layout.addWidget(QLabel("Model"))
+        # Model input - không có viền
+        model_label = QLabel("Model")
+        model_label.setStyleSheet("border: none;")  # Đảm bảo label không có viền
+        top_layout.addWidget(model_label)
         self.model_input = QLineEdit()
         top_layout.addWidget(self.model_input)
         
-        # Version label - Thêm hiển thị tên công đoạn cụ thể
+        # Version label - không có viền
         self.process_name_label = QLabel("Kiểm tra Label v1.0")
-        self.process_name_label.setStyleSheet("font-weight: bold; color: blue;")
+        self.process_name_label.setStyleSheet("font-weight: bold; color: blue; border: none;")
         self.process_name_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         top_layout.addWidget(self.process_name_label)
         
@@ -198,232 +233,223 @@ class LinePacking(QMainWindow):
         
         main_layout.addLayout(button_layout)
         
-        # Create stacked widget for auto and settings views
-        self.main_content = QWidget()
-        main_content_layout = QHBoxLayout(self.main_content)
-        main_content_layout.setContentsMargins(0, 0, 0, 0)
+        # Main content layout
+        main_content = QHBoxLayout()
         
         # Left panel - Camera view
-        self.camera_frame = QFrame()
-        self.camera_frame.setStyleSheet("border: 1px solid orange;")
-        camera_layout = QVBoxLayout(self.camera_frame)
+        camera_frame = QFrame()
+        camera_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
+        camera_layout = QVBoxLayout(camera_frame)
+        camera_layout.setContentsMargins(10, 10, 10, 10)  # Thêm padding bên trong
         
         self.camera_label = QLabel("Camera View Online")
         self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.camera_label.setStyleSheet("color: blue; font-weight: bold; font-size: 14px;")
+        self.camera_label.setStyleSheet("color: blue; font-weight: bold; font-size: 14px; border: none;")
         self.camera_label.setMinimumSize(640, 480)
         camera_layout.addWidget(self.camera_label)
         
-        main_content_layout.addWidget(self.camera_frame, 2)  # Takes 2/3 of width
+        main_content.addWidget(camera_frame, 2)  # Takes 2/3 of width
         
-        # Right panel - Controls and status
-        self.controls_frame = QFrame()
-        self.controls_frame.setStyleSheet("border: 1px solid orange;")
+        # Right panel
+        controls_frame = QFrame()
+        right_layout = QVBoxLayout(controls_frame)
         
-        # Tạo QSplitter dọc cho bên phải để có thể thay đổi kích thước các thành phần
-        right_splitter = QSplitter(Qt.Orientation.Vertical)
-        # Đặt thuộc tính để ngăn các thành phần bị thu gọn hoàn toàn
-        right_splitter.setChildrenCollapsible(False)
-        
-        # Status display - Cải thiện hiển thị trạng thái sản lượng
+        # Status display - Đặt tiêu đề và giá trị trên cùng một hàng
         status_frame = QFrame()
-        status_frame.setStyleSheet("border: 1px solid orange; background-color: white;")
+        status_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
         status_layout = QVBoxLayout(status_frame)
+        status_layout.setContentsMargins(10, 10, 10, 10)  # Thêm padding bên trong
         
-        # Tiêu đề trạng thái
-        status_title = QLabel("Hiển thị trạng thái sản lượng")
-        status_title.setStyleSheet("font-weight: bold; color: blue;")
-        status_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        status_layout.addWidget(status_title)
+        # Layout cho OK, NG, Total, Rate - tất cả trên cùng một hàng
+        stats_layout = QHBoxLayout()
+        stats_layout.setAlignment(Qt.AlignmentFlag.AlignCenter) # Căn giữa tất cả các cặp
+        stats_layout.setSpacing(40)  # Khoảng cách lớn hơn giữa các cặp nhãn-giá trị
         
-        # Bảng thống kê chi tiết
-        stats_grid = QGridLayout()
-        stats_grid.addWidget(QLabel("OK:"), 0, 0)
+        # OK - không có viền cho các label bên trong
+        ok_layout = QHBoxLayout()
+        ok_label = QLabel("OK:")
+        ok_label.setStyleSheet("font-weight: bold; font-size: 16px; border: none;")
         self.ok_count_label = QLabel("0")
-        self.ok_count_label.setStyleSheet("font-weight: bold; color: green;")
-        stats_grid.addWidget(self.ok_count_label, 0, 1)
+        self.ok_count_label.setStyleSheet("font-weight: bold; color: green; font-size: 16px; border: none;")
+        ok_layout.addWidget(ok_label)
+        ok_layout.addWidget(self.ok_count_label)
+        stats_layout.addLayout(ok_layout)
         
-        stats_grid.addWidget(QLabel("NG:"), 0, 2)
+        # NG - không có viền cho các label bên trong
+        ng_layout = QHBoxLayout()
+        ng_label = QLabel("NG:")
+        ng_label.setStyleSheet("font-weight: bold; font-size: 16px; border: none;")
         self.ng_count_label = QLabel("0")
-        self.ng_count_label.setStyleSheet("font-weight: bold; color: red;")
-        stats_grid.addWidget(self.ng_count_label, 0, 3)
+        self.ng_count_label.setStyleSheet("font-weight: bold; color: red; font-size: 16px; border: none;")
+        ng_layout.addWidget(ng_label)
+        ng_layout.addWidget(self.ng_count_label)
+        stats_layout.addLayout(ng_layout)
         
-        stats_grid.addWidget(QLabel("Total:"), 1, 0)
+        # Total - không có viền cho các label bên trong
+        total_layout = QHBoxLayout()
+        total_label = QLabel("Total:")
+        total_label.setStyleSheet("font-weight: bold; font-size: 16px; border: none;")
         self.total_count_label = QLabel("0")
-        self.total_count_label.setStyleSheet("font-weight: bold;")
-        stats_grid.addWidget(self.total_count_label, 1, 1)
+        self.total_count_label.setStyleSheet("font-weight: bold; font-size: 16px; border: none;")
+        total_layout.addWidget(total_label)
+        total_layout.addWidget(self.total_count_label)
+        stats_layout.addLayout(total_layout)
         
-        stats_grid.addWidget(QLabel("Rate:"), 1, 2)
+        # Rate - không có viền cho các label bên trong
+        rate_layout = QHBoxLayout()
+        rate_label = QLabel("Rate:")
+        rate_label.setStyleSheet("font-weight: bold; font-size: 16px; border: none;")
         self.rate_label = QLabel("0.0%")
-        self.rate_label.setStyleSheet("font-weight: bold; color: blue;")
-        stats_grid.addWidget(self.rate_label, 1, 3)
+        self.rate_label.setStyleSheet("font-weight: bold; color: blue; font-size: 16px; border: none;")
+        rate_layout.addWidget(rate_label)
+        rate_layout.addWidget(self.rate_label)
+        stats_layout.addLayout(rate_layout)
         
-        status_layout.addLayout(stats_grid)
-        # Đặt chiều cao tối thiểu lớn hơn để không bị thu nhỏ quá
-        status_frame.setMinimumHeight(80)
-        right_splitter.addWidget(status_frame)
+        status_layout.addLayout(stats_layout)
+        status_layout.setContentsMargins(10, 15, 10, 15) # Thêm padding nội dung
+        right_layout.addWidget(status_frame)
         
-        # Control buttons
-        buttons_container = QWidget()
-        buttons_layout = QVBoxLayout(buttons_container)
-        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        # Control buttons - làm to các nút
+        buttons_frame = QFrame()
+        buttons_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
+        buttons_layout = QHBoxLayout(buttons_frame)
+        buttons_layout.setContentsMargins(10, 10, 10, 10)  # Thêm padding bên trong
         
-        button_frame = QHBoxLayout()
+        # Tạo nút lớn hơn
+        button_style = "font-size: 18px; font-weight: bold; padding: 15px; min-height: 70px; min-width: 120px;"
+        
         self.start_btn = QPushButton("Start")
-        self.start_btn.setStyleSheet("background-color: #90EE90; font-weight: bold;")
+        self.start_btn.setStyleSheet(button_style + "background-color: #90EE90;")
+        self.start_btn.clicked.connect(self.start_inspection)
+        
         self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setStyleSheet("background-color: #90EE90; font-weight: bold;")
+        self.stop_btn.setStyleSheet(button_style + "background-color: #FF9999;")
+        self.stop_btn.clicked.connect(self.stop_inspection)
+        
         self.reset_btn = QPushButton("Reset")
-        self.reset_btn.setStyleSheet("background-color: #4169E1; color: white; font-weight: bold;")
+        self.reset_btn.setStyleSheet(button_style + "background-color: #4169E1; color: white;")
+        
         self.recheck_btn = QPushButton("Recheck")
-        self.recheck_btn.setStyleSheet("background-color: #4169E1; color: white; font-weight: bold;")
+        self.recheck_btn.setStyleSheet(button_style + "background-color: #4169E1; color: white;")
         
-        button_frame.addWidget(self.start_btn)
-        button_frame.addWidget(self.stop_btn)
-        button_frame.addWidget(self.reset_btn)
-        button_frame.addWidget(self.recheck_btn)
+        buttons_layout.addWidget(self.start_btn)
+        buttons_layout.addWidget(self.stop_btn)
+        buttons_layout.addWidget(self.reset_btn)
+        buttons_layout.addWidget(self.recheck_btn)
         
-        buttons_layout.addLayout(button_frame)
+        right_layout.addWidget(buttons_frame)
         
         # Image and Result views
         views_layout = QHBoxLayout()
         
         # Left view - Camera image
-        self.image_frame = QFrame()
-        self.image_frame.setStyleSheet("border: 1px solid orange; background-color: white;")
-        image_layout = QVBoxLayout(self.image_frame)
-        
-        image_title = QLabel("View ảnh vừa chụp")
-        image_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        image_title.setStyleSheet("color: blue; font-weight: bold;")
-        image_layout.addWidget(image_title)
+        image_frame = QFrame()
+        image_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
+        image_layout = QVBoxLayout(image_frame)
+        image_layout.setContentsMargins(10, 10, 10, 10)  # Thêm padding bên trong
         
         self.image_view = QLabel()
         self.image_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_view.setMinimumSize(300, 220)
+        self.image_view.setStyleSheet("border: none;")  # Loại bỏ viền trong label
         image_layout.addWidget(self.image_view)
         
-        views_layout.addWidget(self.image_frame, 2)
+        views_layout.addWidget(image_frame, 2)
         
-        # Right view - Results
-        self.result_frame = QFrame()
-        self.result_frame.setStyleSheet("border: 1px solid orange; background-color: white;")
-        result_layout = QVBoxLayout(self.result_frame)
+        # Đảm bảo các widget quan trọng có kích thước tối thiểu hợp lý
+        self.image_view.setMinimumSize(300, 220)
+        self.camera_label.setMinimumSize(640, 480)
         
-        result_title = QLabel("Trạng thái kết quả")
-        result_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        result_title.setStyleSheet("color: blue; font-weight: bold;")
-        result_layout.addWidget(result_title)
+        # Thiết lập policy mở rộng để đảm bảo các widget mở rộng đúng cách khi full screen
+        size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.image_view.setSizePolicy(size_policy)
+        self.camera_label.setSizePolicy(size_policy)
+
+        # Right view - Results (Chỉ hiển thị OK, NG, Waiting)
+        result_frame = QFrame()
+        result_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
+        result_layout = QVBoxLayout(result_frame)
+        result_layout.setContentsMargins(10, 10, 10, 10)  # Thêm padding bên trong
         
-        self.result_view = QLabel("NG/OK/Waiting...")
+        self.result_view = QLabel("Waiting...")
         self.result_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.result_view.setStyleSheet("font-size: 14px;")
+        self.result_view.setStyleSheet("font-size: 24px; font-weight: bold; color: orange; border: none;")
         self.result_view.setWordWrap(True)
-        self.result_view.setMinimumHeight(80)
-        self.result_view.setMaximumHeight(80)
         result_layout.addWidget(self.result_view)
         
-        views_layout.addWidget(self.result_frame, 1)
+        views_layout.addWidget(result_frame, 1)
         
-        buttons_layout.addLayout(views_layout)
-        # Đặt chiều cao tối thiểu lớn hơn
-        buttons_container.setMinimumHeight(200)
-        right_splitter.addWidget(buttons_container)
+        right_layout.addLayout(views_layout)
         
-        # Teaching display
-        self.teaching_frame = QFrame()
-        self.teaching_frame.setStyleSheet("border: 1px solid orange; background-color: white;")
-        teaching_layout = QVBoxLayout(self.teaching_frame)
+        # Teaching display - cải thiện layout
+        teaching_frame = QFrame()
+        teaching_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
+        teaching_layout = QVBoxLayout(teaching_frame)
+        teaching_layout.setContentsMargins(10, 10, 10, 10)  # Thêm padding bên trong
         
-        teaching_title = QLabel("Hiển thị tool teaching")
-        teaching_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        teaching_title.setStyleSheet("color: blue; font-weight: bold;")
-        teaching_layout.addWidget(teaching_title)
+        # Định dạng lại layout teaching
+        teaching_form = QFormLayout()
+        teaching_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        teaching_form.setHorizontalSpacing(50)  # Tăng khoảng cách giữa nhãn và giá trị
+        teaching_form.setContentsMargins(0, 0, 0, 0)  # Đảm bảo form không có biên
         
-        # Thêm các thành phần hiển thị thông tin teaching
-        teaching_grid = QGridLayout()
+        # Đảm bảo các nhãn trong form không có viền
+        model_title = QLabel("<b>Model:</b>")
+        model_title.setStyleSheet("border: none;")
+        area_title = QLabel("<b>Vùng kiểm tra:</b>")
+        area_title.setStyleSheet("border: none;")
+        settings_title = QLabel("<b>Cài đặt vision:</b>")
+        settings_title.setStyleSheet("border: none;")
+        status_title = QLabel("<b>Trạng thái:</b>")
+        status_title.setStyleSheet("border: none;")
         
-        # Thêm thông tin về model hiện tại
-        teaching_grid.addWidget(QLabel("Model:"), 0, 0)
         self.teaching_model_label = QLabel("Not set")
-        teaching_grid.addWidget(self.teaching_model_label, 0, 1)
-        
-        # Thêm thông tin về khu vực kiểm tra
-        teaching_grid.addWidget(QLabel("Vùng kiểm tra:"), 1, 0)
+        self.teaching_model_label.setStyleSheet("border: none;")  # Loại bỏ viền
         self.teaching_area_label = QLabel("Label area")
-        teaching_grid.addWidget(self.teaching_area_label, 1, 1)
-        
-        # Thêm thông tin về cài đặt vision
-        teaching_grid.addWidget(QLabel("Cài đặt vision:"), 2, 0)
+        self.teaching_area_label.setStyleSheet("border: none;")  # Loại bỏ viền
         self.teaching_settings_label = QLabel("Barcode Checking")
-        teaching_grid.addWidget(self.teaching_settings_label, 2, 1)
-        
-        # Thêm hiển thị trạng thái teaching
-        teaching_grid.addWidget(QLabel("Trạng thái:"), 3, 0)
+        self.teaching_settings_label.setStyleSheet("border: none;")  # Loại bỏ viền
         self.teaching_status_label = QLabel("Ready")
-        self.teaching_status_label.setStyleSheet("color: green; font-weight: bold;")
-        teaching_grid.addWidget(self.teaching_status_label, 3, 1)
+        self.teaching_status_label.setStyleSheet("color: green; font-weight: bold; border: none;")  # Loại bỏ viền
         
-        teaching_layout.addLayout(teaching_grid)
+        # Sử dụng các label đã tạo thay vì chuỗi văn bản
+        teaching_form.addRow(model_title, self.teaching_model_label)
+        teaching_form.addRow(area_title, self.teaching_area_label)
+        teaching_form.addRow(settings_title, self.teaching_settings_label)
+        teaching_form.addRow(status_title, self.teaching_status_label)
+        
+        teaching_layout.addLayout(teaching_form)
         
         # Thêm nút để mở cấu hình teaching
         self.open_teaching_btn = QPushButton("Mở cấu hình teaching")
-        self.open_teaching_btn.clicked.connect(self.open_teaching_config)
+        self.open_teaching_btn.setStyleSheet("border: 1px solid #999;")  # Nút vẫn giữ viền nhẹ
         teaching_layout.addWidget(self.open_teaching_btn)
         
-        # Đảm bảo luôn có kích thước tối thiểu hiển thị
-        self.teaching_frame.setMinimumHeight(130)
-        right_splitter.addWidget(self.teaching_frame)
+        right_layout.addWidget(teaching_frame)
         
         # Log process display
-        self.log_frame = QFrame()
-        self.log_frame.setStyleSheet("border: 1px solid orange; background-color: white;")
-        log_layout = QVBoxLayout(self.log_frame)
+        log_frame = QFrame()
+        log_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
+        log_layout = QVBoxLayout(log_frame)
+        log_layout.setContentsMargins(10, 10, 10, 10)  # Thêm padding bên trong
         
-        log_title = QLabel("Show log process theo thời gian")
-        log_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        log_title.setStyleSheet("color: blue; font-weight: bold;")
-        log_layout.addWidget(log_title)
-        
-        # Thêm chi tiết hơn về log
-        log_detail = QLabel("SN input/Model/kết quả kiểm tra/Finish")
-        log_detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        log_layout.addWidget(log_detail)
-        
-        # Create log table
-        self.log_table = QTableWidget(0, 4)
-        self.log_table.setHorizontalHeaderLabels(["Time", "S/N", "Model", "Result"])
+        # Tạo bảng log
+        self.log_table = QTableWidget()
+        self.log_table.setColumnCount(5)
+        self.log_table.setHorizontalHeaderLabels(["Thời gian", "S/N", "Model", "Kết quả", "Thời gian xử lý"])
         self.log_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.log_table.setMinimumHeight(150)
+        self.log_table.setStyleSheet("border: none;")  # Loại bỏ viền của bảng
         log_layout.addWidget(self.log_table)
         
-        # Đảm bảo luôn có kích thước tối thiểu hiển thị
-        self.log_frame.setMinimumHeight(90)
-        right_splitter.addWidget(self.log_frame)
+        right_layout.addWidget(log_frame)
         
-        # Thêm nút khôi phục kích thước mặc định
-        restore_sizes_btn = QPushButton("↺ Khôi phục kích thước mặc định")
-        restore_sizes_btn.setStyleSheet("background-color: #FFD700; font-weight: bold;")
-        restore_sizes_btn.clicked.connect(lambda: self.restore_default_splitter_sizes(right_splitter))
+        # Thêm layout phải vào main content
+        main_content.addWidget(controls_frame, 1)  # Takes 1/3 of width
+        main_layout.addLayout(main_content)
         
-        # Thiết lập kích thước tương đối ban đầu cho các phần tử trong right_splitter
-        right_splitter.setSizes([100, 300, 200, 200])
-        
-        # Tạo layout cho controls_frame để chứa right_splitter và nút khôi phục
-        controls_layout = QVBoxLayout(self.controls_frame)
-        controls_layout.addWidget(right_splitter)
-        controls_layout.addWidget(restore_sizes_btn)
-        
-        main_content_layout.addWidget(self.controls_frame, 1)
-        
-        main_layout.addWidget(self.main_content)
-        
-        # Connect buttons
-        self.auto_btn.clicked.connect(self.show_auto_view)
-        self.setting_btn.clicked.connect(self.show_settings_view)
-        self.start_btn.clicked.connect(self.start_inspection)
-        self.stop_btn.clicked.connect(self.stop_inspection)
-        self.reset_btn.clicked.connect(self.reset_system)
-        self.recheck_btn.clicked.connect(self.recheck)
+        # Cập nhật statusbar
+        self.statusBar().showMessage("Hệ thống sẵn sàng")
 
     def restore_default_splitter_sizes(self, splitter):
         """Khôi phục kích thước mặc định cho splitter"""
@@ -442,7 +468,8 @@ class LinePacking(QMainWindow):
             
             if images:
                 # Chọn ảnh mới nhất từ danh sách ảnh
-                image_path = os.path.join(result_folder, images[-1])  # Lấy ảnh mới nhất
+                images.sort(key=lambda x: os.path.getmtime(os.path.join(result_folder, x)), reverse=True)
+                image_path = os.path.join(result_folder, images[0])  # Lấy ảnh mới nhất theo thời gian sửa đổi
                 
                 # Chỉ cập nhật nếu đây là ảnh mới
                 if image_path != self.current_image_path:
@@ -456,86 +483,15 @@ class LinePacking(QMainWindow):
                         # Cập nhật hiển thị ảnh
                         self.update_image_displays()
                         
-                        # Phân tích kết quả từ barcode trong ảnh nếu có
-                        self.process_result_from_image(image_path)
         else:
             print(f"Result folder does not exist: {result_folder}")
             
-    def process_result_from_image(self, image_path):
-        """Xử lý kết quả từ ảnh đã được xử lý bởi phần mềm thứ 3"""
-        try:
-            # Đọc ảnh và tìm barcode
-            image = cv2.imread(image_path)
-            if image is None:
-                print(f"Failed to load image: {image_path}")
-                return
-                
-            # Tìm barcode bằng pyzbar
-            barcodes = decode(image)
-            
-            if barcodes:
-                # Lấy barcode đầu tiên
-                barcode = barcodes[0]
-                barcode_data = barcode.data.decode('utf-8')
-                barcode_type = barcode.type
-                
-                # Hiển thị thông tin barcode
-                barcode_info = f"Detected: {barcode_data}\nType: {barcode_type}"
-                
-                # Lấy mã barcode mong đợi (sử dụng S/N)
-                expected_barcode = self.sn_input.text()
-                
-                # Kiểm tra mã barcode
-                if barcode_data == expected_barcode:
-                    self.result_view.setText(f"PASS\n{barcode_info}")
-                    self.result_view.setStyleSheet("color: green; font-weight: bold;")
-                    self.pass_count += 1
-                    self.teaching_status_label.setText("PASS")
-                    self.teaching_status_label.setStyleSheet("color: green; font-weight: bold;")
-                else:
-                    self.result_view.setText(f"FAIL - Mismatch\n{barcode_info}")
-                    self.result_view.setStyleSheet("color: red; font-weight: bold;")
-                    self.fail_count += 1
-                    self.teaching_status_label.setText("FAIL")
-                    self.teaching_status_label.setStyleSheet("color: red; font-weight: bold;")
-                
-                # Cập nhật số lần quét và thống kê
-                self.scan_count += 1
-                self.update_stats()
-                
-                # Thêm vào log
-                self.add_to_log(
-                    sn=self.sn_input.text(),
-                    model=self.model_input.text(),
-                    result=self.result_view.text().split('\n')[0]  # Dòng đầu tiên của kết quả
-                )
-            else:
-                # Không tìm thấy barcode
-                self.result_view.setText("FAIL\nNo barcode detected")
-                self.result_view.setStyleSheet("color: red; font-weight: bold;")
-                self.fail_count += 1
-                self.teaching_status_label.setText("FAIL")
-                self.teaching_status_label.setStyleSheet("color: red; font-weight: bold;")
-                
-                # Cập nhật số lần quét và thống kê
-                self.scan_count += 1
-                self.update_stats()
-                
-                # Thêm vào log
-                self.add_to_log(
-                    sn=self.sn_input.text(),
-                    model=self.model_input.text(),
-                    result="FAIL - No barcode"
-                )
-                
-        except Exception as e:
-            print(f"Error processing result from image: {str(e)}")
-            self.result_view.setText(f"Error: {str(e)}")
-            self.result_view.setStyleSheet("color: red; font-weight: bold;")
+  
 
     def start_inspection(self):
         """Start the inspection process and send TRIGGER to comp4"""
         try:
+            current_state = self.windowState()
             # Check if S/N and Model are entered
             if not self.sn_input.text() or not self.model_input.text():
                 self.result_view.setText("Please enter S/N and Model")
@@ -544,6 +500,7 @@ class LinePacking(QMainWindow):
 
             # Đánh dấu là đã bắt đầu chạy
             self.is_running = True
+            self.camera_timer.start(100)
             
             # Cập nhật giao diện khi bắt đầu quá trình gửi TRIGGER
             self.result_view.setText("Đang gửi message \"TRIGGER\" đến comp4...\nVui lòng đợi...")
@@ -593,7 +550,8 @@ class LinePacking(QMainWindow):
                 model=self.model_input.text(),
                 result="TRIGGER Sent"
             )
-
+            if current_state & Qt.WindowState.WindowFullScreen:
+                QTimer.singleShot(100, lambda: self.setWindowState(current_state))
             # Bây giờ mới bắt đầu camera timer
             self.camera_timer.start(1000)  # Update every second
 
@@ -607,7 +565,18 @@ class LinePacking(QMainWindow):
             self.teaching_status_label.setText("Error")
             self.teaching_status_label.setStyleSheet("color: red; font-weight: bold;")
             self.statusBar().showMessage(f"Lỗi: {str(e)}")
-
+    def changeEvent(self, event):
+        """Xử lý khi trạng thái cửa sổ thay đổi"""
+        if event.type() == event.Type.WindowStateChange:
+            # Nếu thay đổi sang/từ full screen, đảm bảo giao diện được cập nhật đúng
+            if self.windowState() & Qt.WindowState.WindowFullScreen:
+                # Đang ở chế độ full screen
+                QTimer.singleShot(300, self.update_image_displays)
+            elif event.oldState() & Qt.WindowState.WindowFullScreen:
+                # Vừa thoát chế độ full screen
+                QTimer.singleShot(300, self.update_image_displays)
+        
+        super().changeEvent(event)
     def stop_inspection(self):
         """Stop the inspection process"""
         self.is_running = False
