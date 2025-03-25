@@ -1,4 +1,5 @@
 import sys
+sys.path.append("./")  # Thêm thư mục hiện tại vào path
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QLineEdit, 
                              QPushButton, QFrame, QHBoxLayout, QVBoxLayout, QGridLayout,
                              QTabWidget, QComboBox, QCheckBox, QSlider, QSpinBox, 
@@ -21,6 +22,10 @@ import time
 import random
 import shutil
 import pyodbc  # Thêm thư viện pyodbc để kết nối với SQL Server
+
+from libs2.canvas import Canvas, WindowCanvas
+from libs2.shape import Shape
+from libs2.edit_label_dlg import BoxEditLabel
 
 
 class DatabaseManager:
@@ -281,14 +286,9 @@ class LinePacking(QMainWindow):
                     
                     # Cập nhật ảnh trong camera view
                     self.original_pixmap = QPixmap(image_path)
-                    camera_pixmap = self.original_pixmap.scaled(
-                        self.camera_label.width(), 
-                        self.camera_label.height(),
-                        Qt.AspectRatioMode.KeepAspectRatio, 
-                        Qt.TransformationMode.SmoothTransformation
-                    )
-                    self.camera_label.setPixmap(camera_pixmap)
-                    self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    
+                    # Hiển thị ảnh trên camera canvas
+                    self.camera_canvas.load_pixmap(self.original_pixmap, fit=True)
                     
                     # Cập nhật image view
                     self.update_image_displays()
@@ -401,18 +401,11 @@ class LinePacking(QMainWindow):
                         # Cập nhật hiển thị ảnh
                         self.original_pixmap = QPixmap(image_path)
                         
-                        # Cập nhật camera view
-                        camera_pixmap = self.original_pixmap.scaled(
-                            self.camera_label.width(), 
-                            self.camera_label.height(),
-                            Qt.AspectRatioMode.KeepAspectRatio, 
-                            Qt.TransformationMode.SmoothTransformation
-                        )
-                        self.camera_label.setPixmap(camera_pixmap)
-                        self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                        # Cập nhật camera canvas
+                        self.camera_canvas.load_pixmap(self.original_pixmap, fit=True)
                         
-                        # Cập nhật image view
-                        self.update_image_displays()
+                        # Cập nhật image canvas
+                        self.image_canvas.load_pixmap(self.original_pixmap, fit=True)
                         
                         # Thêm vào log
                         self.add_to_log(
@@ -448,65 +441,18 @@ class LinePacking(QMainWindow):
         # Đảm bảo ảnh được cập nhật khi cửa sổ hiển thị
         QTimer.singleShot(100, self.update_image_displays)
     def update_image_displays(self):
-        """Cập nhật hiển thị ảnh theo kích thước hiện tại của các label"""
+        """Cập nhật hiển thị ảnh theo kích thước hiện tại của các canvas"""
         if not hasattr(self, 'original_pixmap') or self.original_pixmap is None or self.original_pixmap.isNull():
             return
         
-        # Đảm bảo các label đã được cập nhật kích thước
+        # Đảm bảo các canvas đã được cập nhật kích thước
         QApplication.processEvents()
         
-        # Cập nhật camera view
-        camera_width = self.camera_label.width()
-        camera_height = self.camera_label.height()
-        camera_pixmap = self.original_pixmap.scaled(
-            camera_width, 
-            camera_height,
-            Qt.AspectRatioMode.KeepAspectRatio, 
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.camera_label.setPixmap(camera_pixmap)
-        self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Cập nhật camera canvas nếu cần
+        self.camera_canvas.load_pixmap(self.original_pixmap, fit=True)
         
-        # Cập nhật image view
-        view_width = self.image_view.width()
-        view_height = self.image_view.height()
-        
-        # Đảm bảo kích thước khung nhìn là hợp lệ
-        if view_width <= 0 or view_height <= 0:
-            QTimer.singleShot(100, self.update_image_displays)  # Thử lại sau
-            return
-        
-        # Tính toán kích thước tối đa cho ảnh mà không bị cắt
-        max_dimension = min(view_width, view_height)
-        
-        # Tính toán tỷ lệ giữa chiều rộng và chiều cao của ảnh gốc
-        if self.original_pixmap.height() > 0:  # Tránh chia cho 0
-            original_ratio = self.original_pixmap.width() / self.original_pixmap.height()
-        else:
-            original_ratio = 1.0
-        
-        # Xác định kích thước mới dựa trên tỷ lệ ảnh gốc
-        if original_ratio > 1.0:  # Ảnh ngang
-            new_width = max_dimension
-            new_height = int(max_dimension / original_ratio)
-        else:  # Ảnh dọc hoặc vuông
-            new_height = max_dimension
-            new_width = int(max_dimension * original_ratio)
-        
-        # Scale ảnh với kích thước đã tính
-        image_pixmap = self.original_pixmap.scaled(
-            new_width,
-            new_height,
-            Qt.AspectRatioMode.KeepAspectRatio, 
-            Qt.TransformationMode.SmoothTransformation
-        )
-        
-        # Đặt pixmap và căn giữa
-        self.image_view.setPixmap(image_pixmap)
-        self.image_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        # In thông tin debug
-        print(f"Image view size: {view_width}x{view_height}, Scaled image: {new_width}x{new_height}")
+        # Cập nhật image canvas
+        self.image_canvas.load_pixmap(self.original_pixmap, fit=True)
     def initUI(self):
         """Khởi tạo giao diện người dùng"""
         # Thiết lập cửa sổ chính
@@ -568,17 +514,18 @@ class LinePacking(QMainWindow):
         # Main content layout
         main_content = QHBoxLayout()
         
-        # Left panel - Camera view
+        # Left panel - Camera view - Thay đổi QLabel bằng Canvas
         camera_frame = QFrame()
         camera_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
         camera_layout = QVBoxLayout(camera_frame)
         camera_layout.setContentsMargins(10, 10, 10, 10)  # Thêm padding bên trong
         
-        self.camera_label = QLabel("Camera View Online")
-        self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.camera_label.setStyleSheet("color: blue; font-weight: bold; font-size: 14px; border: none;")
-        self.camera_label.setMinimumSize(480, 360)  # Giảm kích thước tối thiểu
-        camera_layout.addWidget(self.camera_label)
+        # Tạo Canvas thay vì QLabel cho camera view
+        self.camera_canvas = Canvas(camera_frame, bcontext_menu=True, benable_drawing=True)
+        self.camera_canvas.setMinimumSize(480, 360)  # Giảm kích thước tối thiểu
+        self.camera_canvas.mouseMoveSignal.connect(self.on_camera_mouse_move)
+        self.camera_canvas.newShapeSignal.connect(self.on_new_shape)
+        camera_layout.addWidget(self.camera_canvas)
         
         main_content.addWidget(camera_frame, 2)  # Takes 2/3 of width
         
@@ -674,17 +621,18 @@ class LinePacking(QMainWindow):
         # Image and Result views
         views_layout = QHBoxLayout()
         
-        # Left view - Camera image
+        # Left view - Image view - Thay đổi QLabel bằng Canvas
         image_frame = QFrame()
         image_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
         image_layout = QVBoxLayout(image_frame)
         image_layout.setContentsMargins(10, 10, 10, 10)  # Thêm padding bên trong
         
-        self.image_view = QLabel()
-        self.image_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_view.setMinimumSize(240, 180)  # Giảm kích thước tối thiểu
-        self.image_view.setStyleSheet("border: none;")  # Loại bỏ viền trong label
-        image_layout.addWidget(self.image_view)
+        # Tạo Canvas thay vì QLabel cho image view
+        self.image_canvas = Canvas(image_frame, bcontext_menu=True, benable_drawing=True)
+        self.image_canvas.setMinimumSize(240, 180)  # Giảm kích thước tối thiểu
+        self.image_canvas.mouseMoveSignal.connect(self.on_image_mouse_move)
+        self.image_canvas.newShapeSignal.connect(self.on_new_shape)
+        image_layout.addWidget(self.image_canvas)
         
         views_layout.addWidget(image_frame, 2)
         
@@ -694,8 +642,8 @@ class LinePacking(QMainWindow):
         size_policy.setHorizontalStretch(1)
         size_policy.setVerticalStretch(1)
         
-        self.image_view.setSizePolicy(size_policy)
-        self.camera_label.setSizePolicy(size_policy)
+        self.image_canvas.setSizePolicy(size_policy)
+        self.camera_canvas.setSizePolicy(size_policy)
         
         # Đặt policy cho các frame chứa để đảm bảo chúng mở rộng đúng cách
         camera_frame.setSizePolicy(size_policy)
@@ -868,10 +816,14 @@ class LinePacking(QMainWindow):
         self.camera_timer.stop()
         self.sn_input.clear()
         self.model_input.clear()
-        self.camera_label.setText("Camera View Online")
-        self.camera_label.setPixmap(QPixmap())
-        self.image_view.setText("View ảnh vừa chụp")
-        self.image_view.setPixmap(QPixmap())
+        
+        # Reset Canvas
+        self.camera_canvas.clear()
+        self.camera_canvas.clear_pixmap()
+        
+        self.image_canvas.clear()
+        self.image_canvas.clear_pixmap()
+        
         self.result_view.setText("Trạng thái kết quả\nNG/OK/Waiting...")
         self.result_view.setStyleSheet("color: blue;")
         
@@ -1367,6 +1319,25 @@ class LinePacking(QMainWindow):
         except Exception as e:
             print(f"Lỗi khi thêm log: {str(e)}")
             self.statusBar().showMessage(f"Lỗi khi thêm log: {str(e)}")
+
+    def on_camera_mouse_move(self, pos):
+        """Xử lý sự kiện di chuyển chuột trên camera canvas"""
+        # Có thể hiển thị tọa độ chuột hoặc thông tin pixel ở đây
+        pass
+
+    def on_image_mouse_move(self, pos):
+        """Xử lý sự kiện di chuyển chuột trên image canvas"""
+        # Có thể hiển thị tọa độ chuột hoặc thông tin pixel ở đây
+        pass
+
+    def on_new_shape(self, index):
+        """Xử lý khi một hình mới được tạo trên canvas"""
+        canvas = self.sender()
+        shape = canvas[index]
+        print(f"Đã tạo hình mới: {shape.label} - {shape.points}")
+        
+        # Ví dụ: có thể sử dụng hình này để cắt vùng quan tâm (ROI)
+        # hoặc thực hiện phân tích hình ảnh trên vùng được chọn
 
 
 def main():

@@ -1,7 +1,7 @@
-from shape import *
-from edit_label_dlg import BoxEditLabel
-from utils import *
-import resources
+from libs2.shape import *
+from libs2.edit_label_dlg import BoxEditLabel
+from libs2.utils import *
+import libs2.resources
 from PyQt6.QtGui import QColor
 from functools import partial
 from PyQt6.QtWidgets import QLabel, QMainWindow, QMenu, QWidget, QApplication, QPushButton, QMessageBox
@@ -246,7 +246,23 @@ class Canvas(QLabel):
     def cancel_full_screen(self):
         self._b_full_screen = False
         self.setParent(self._old_parent)
-        self.parent().setCentralWidget(self)
+        
+        # Kiểm tra loại parent để xử lý phù hợp
+        from PyQt6.QtWidgets import QMainWindow
+        if isinstance(self._old_parent, QMainWindow):
+            self._old_parent.setCentralWidget(self)
+        else:
+            # Nếu parent không phải QMainWindow, thêm vào layout của parent
+            # hoặc chỉ cần thêm vào parent mà không cần setCentralWidget
+            if hasattr(self._old_parent, 'layout') and self._old_parent.layout() is not None:
+                # Xóa tất cả các widget trước khi thêm lại canvas
+                while self._old_parent.layout().count():
+                    item = self._old_parent.layout().takeAt(0)
+                    if item.widget():
+                        item.widget().setParent(None)
+                # Thêm canvas vào layout
+                self._old_parent.layout().addWidget(self)
+        
         self.zoom_buttons[3].setIcon(newIcon("full_screen"))
         self.zoom_buttons[3].setToolTip("Show full screen")
 
