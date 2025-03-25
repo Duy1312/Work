@@ -18,10 +18,165 @@ import subprocess
 import json
 import serial  # Thêm thư viện pyserial
 import time
+import random
+import shutil
+import pyodbc  # Thêm thư viện pyodbc để kết nối với SQL Server
+
+
+class DatabaseManager:
+    """Quản lý kết nối và ghi dữ liệu vào SQL Server"""
+    
+    def __init__(self, server="BOOK-BL0VD0SGKA\\SQLEXPRESS", database="VisionCheckLog", trusted_connection=True):
+        self.server = server
+        self.database = database
+        self.trusted_connection = trusted_connection
+        self.connection = None
+        
+        # Tạo database và bảng nếu chưa tồn tại
+        self.initialize_database()
+        
+    def get_connection_string(self, db_name="master"):
+        """Trả về chuỗi kết nối đến SQL Server với database được chỉ định"""
+        if self.trusted_connection:
+            return f"DRIVER={{SQL Server}};SERVER={self.server};DATABASE={db_name};Trusted_Connection=yes;"
+        # Thêm các chuỗi kết nối khác nếu cần
+    
+    def create_database(self):
+        """Tạo database nếu chưa tồn tại bằng autocommit"""
+        try:
+            # Sử dụng connection string đến master với autocommit=True
+            conn_string = self.get_connection_string("master")
+            # Quan trọng: Sử dụng autocommit=True cho câu lệnh CREATE DATABASE
+            conn = pyodbc.connect(conn_string, autocommit=True)
+            
+            cursor = conn.cursor()
+            
+            # Kiểm tra nếu database đã tồn tại
+            cursor.execute(f"SELECT database_id FROM sys.databases WHERE name = '{self.database}'")
+            db_exists = cursor.fetchone() is not None
+            
+            if not db_exists:
+                print(f"Đang tạo database {self.database}...")
+                # Thực hiện CREATE DATABASE với autocommit mode
+                cursor.execute(f"CREATE DATABASE {self.database}")
+                print(f"Đã tạo database {self.database}")
+            else:
+                print(f"Database {self.database} đã tồn tại")
+                
+            cursor.close()
+            conn.close()
+            return True
+        except pyodbc.Error as e:
+            print(f"Lỗi khi tạo database: {str(e)}")
+            return False
+            
+    def connect(self, db_name=None):
+        """Tạo kết nối đến SQL Server"""
+        try:
+            # Sử dụng database được chỉ định hoặc database mặc định
+            database = db_name if db_name else self.database
+            conn_string = self.get_connection_string(database)
+            
+            conn = pyodbc.connect(conn_string)
+            return conn
+        except pyodbc.Error as e:
+            print(f"Lỗi kết nối đến cơ sở dữ liệu {database}: {str(e)}")
+            return None
+            
+    def initialize_database(self):
+        """Tạo cơ sở dữ liệu và bảng nếu chưa tồn tại"""
+        try:
+            # 1. Tạo database (sử dụng phương thức riêng với autocommit)
+            if not self.create_database():
+                print("Không thể tạo database, việc khởi tạo bị hủy")
+                return False
+                
+            # 2. Thử kết nối đến database mới
+            try_count = 0
+            max_tries = 3
+            db_conn = None
+            
+            while try_count < max_tries and db_conn is None:
+                print(f"Đang thử kết nối đến database {self.database} (lần {try_count+1}/{max_tries})...")
+                db_conn = self.connect(self.database)
+                if db_conn is None:
+                    try_count += 1
+                    import time
+                    time.sleep(1)  # Đợi 1 giây trước khi thử lại
+            
+            if db_conn is None:
+                print(f"Không thể kết nối đến database {self.database} sau {max_tries} lần thử")
+                return False
+                
+            # 3. Tạo bảng nếu chưa tồn tại
+            cursor = db_conn.cursor()
+            try:
+                print("Kiểm tra và tạo bảng InspectionLog...")
+                cursor.execute("""
+                    IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[InspectionLog]') AND type in (N'U'))
+                    BEGIN
+                        CREATE TABLE [dbo].[InspectionLog](
+                            [ID] [int] IDENTITY(1,1) PRIMARY KEY,
+                            [Timestamp] [datetime] NOT NULL,
+                            [SerialNumber] [nvarchar](100) NOT NULL,
+                            [Model] [nvarchar](100) NOT NULL,
+                            [Result] [nvarchar](50) NOT NULL,
+                            [ProcessingTime] [nvarchar](50) NULL,
+                            [ImagePath] [nvarchar](500) NULL
+                        )
+                    END
+                """)
+                db_conn.commit()
+                print("Hoàn tất việc tạo bảng InspectionLog")
+            except pyodbc.Error as e:
+                print(f"Lỗi khi tạo bảng: {str(e)}")
+                cursor.close()
+                db_conn.close()
+                return False
+                
+            cursor.close()
+            db_conn.close()
+            
+            print("Đã khởi tạo cơ sở dữ liệu và bảng thành công.")
+            return True
+                
+        except Exception as e:
+            print(f"Lỗi không xác định khi khởi tạo cơ sở dữ liệu: {str(e)}")
+            return False
+            
+    def save_log(self, timestamp, serial_number, model, result, processing_time, image_path=None):
+        """Lưu log vào bảng InspectionLog"""
+        try:
+            conn = self.connect(self.database)
+            if not conn:
+                print(f"Không thể kết nối đến database {self.database} để lưu log")
+                return False
+                
+            cursor = conn.cursor()
+            
+            # Thêm dữ liệu vào bảng
+            cursor.execute("""
+                INSERT INTO InspectionLog (Timestamp, SerialNumber, Model, Result, ProcessingTime, ImagePath)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (timestamp, serial_number, model, result, processing_time, image_path))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            print(f"Đã lưu log vào cơ sở dữ liệu: S/N={serial_number}, Kết quả={result}")
+            return True
+                
+        except pyodbc.Error as e:
+            print(f"Lỗi khi lưu log vào cơ sở dữ liệu: {str(e)}")
+            return False
+        except Exception as e:
+            print(f"Lỗi không xác định khi lưu log: {str(e)}")
+            return False
 
 
 class SerialTriggerWorker(QThread):
-    finished = pyqtSignal(bool, str)
+    finished = pyqtSignal(bool, str, str)  # Thêm tham số cho kết quả (OK/NG)
     status_update = pyqtSignal(str)
 
     def __init__(self, port, baudrate=9600):
@@ -33,25 +188,34 @@ class SerialTriggerWorker(QThread):
         try:
             self.status_update.emit("Đang mở cổng COM...")
 
-            with serial.Serial(self.port, self.baudrate, timeout=5) as ser:
+            with serial.Serial(self.port, self.baudrate, timeout=10) as ser:
                 self.status_update.emit(f"Đã kết nối với {self.port} - đang gửi message 'TRIGGER'...")
                 
                 command = b"TRIGGER"
                 ser.write(command)
 
-                # Đọc phản hồi từ comp4
+                # Đọc phản hồi từ Vision Master
                 response = ser.readline().decode().strip()
-                self.finished.emit(True, f"Message 'TRIGGER' đã gửi thành công. Phản hồi: {response}")
+                
+                # Kiểm tra kết quả từ Vision Master (OK hoặc NG)
+                result = "UNKNOWN"
+                if "OK" in response:
+                    result = "OK"
+                elif "NG" in response:
+                    result = "NG"
+                
+                self.status_update.emit(f"Đã nhận kết quả: {result}")
+                self.finished.emit(True, response, result)
 
         except serial.SerialTimeoutException:
             self.status_update.emit("Timeout khi kết nối serial!")
-            self.finished.emit(False, "Kết nối serial timeout")
+            self.finished.emit(False, "Kết nối serial timeout", "ERROR")
         except serial.SerialException as e:
             self.status_update.emit(f"Lỗi serial: {str(e)}")
-            self.finished.emit(False, f"Lỗi serial: {str(e)}")
+            self.finished.emit(False, f"Lỗi serial: {str(e)}", "ERROR")
         except Exception as e:
             self.status_update.emit(f"Lỗi không xác định: {str(e)}")
-            self.finished.emit(False, f"Lỗi không xác định: {str(e)}")
+            self.finished.emit(False, f"Lỗi không xác định: {str(e)}", "ERROR")
 
 
 class LinePacking(QMainWindow):
@@ -64,7 +228,7 @@ class LinePacking(QMainWindow):
         
         
         # Cấu hình kết nối serial
-        self.serial_port = "COM4"  # Đảm bảo kết nối với COM4
+        self.serial_port = "COM5"  # Đảm bảo kết nối với COM5
         self.serial_baudrate = 9600
         
         self.serial_baudrate
@@ -72,12 +236,64 @@ class LinePacking(QMainWindow):
         self.is_running = False
         self.original_pixmap = None  # Để lưu trữ ảnh gốc
         
+        # Thêm các đường dẫn thư mục
+        self.result_folder = "image/Result"
+        self.ok_folder = "image/OK" 
+        self.ng_folder = "image/NG"
+        
+        # Tạo thư mục nếu chưa tồn tại
+        for folder in [self.result_folder, self.ok_folder, self.ng_folder]:
+            if not os.path.exists(folder):
+                os.makedirs(folder)
+        
+        # Khởi tạo kết nối đến cơ sở dữ liệu
+        try:
+            self.db_manager = DatabaseManager()
+            self.statusBar().showMessage("Đã kết nối đến cơ sở dữ liệu SQL Server")
+        except Exception as e:
+            self.db_manager = None
+            print(f"Lỗi khi khởi tạo kết nối đến cơ sở dữ liệu: {str(e)}")
+            self.statusBar().showMessage("Không thể kết nối đến cơ sở dữ liệu SQL Server")
+        
         self.initUI()  # Đổi tên từ initUI thành init_ui để tuân theo quy ước Python
 
         # Tạo timer nhưng chưa khởi động
         self.camera_timer = QTimer(self)
         self.camera_timer.timeout.connect(self.update_camera_preview)
         # Chỉ bắt đầu khi nhấn nút Start
+
+    def update_camera_preview(self):
+        """
+        Phương thức này kiểm tra các ảnh mới trong thư mục kết quả.
+        Lưu ý: Xử lý chính đã được chuyển sang phương thức handle_trigger_result
+        """
+        if not self.is_running:
+            return
+        
+        try:
+            # Kiểm tra xem có ảnh mới trong thư mục kết quả không
+            if os.path.exists(self.result_folder):
+                images = [f for f in os.listdir(self.result_folder) if f.endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
+                if images and self.original_pixmap is None:  # Chỉ cập nhật nếu chưa có ảnh hiện tại
+                    images.sort(key=lambda x: os.path.getmtime(os.path.join(self.result_folder, x)), reverse=True)
+                    latest_image = images[0]
+                    image_path = os.path.join(self.result_folder, latest_image)
+                    
+                    # Cập nhật ảnh trong camera view
+                    self.original_pixmap = QPixmap(image_path)
+                    camera_pixmap = self.original_pixmap.scaled(
+                        self.camera_label.width(), 
+                        self.camera_label.height(),
+                        Qt.AspectRatioMode.KeepAspectRatio, 
+                        Qt.TransformationMode.SmoothTransformation
+                    )
+                    self.camera_label.setPixmap(camera_pixmap)
+                    self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    
+                    # Cập nhật image view
+                    self.update_image_displays()
+        except Exception as e:
+            print(f"Lỗi trong update_camera_preview: {str(e)}")
 
     # Phương thức này cập nhật trạng thái khi worker gửi tín hiệu
     def update_trigger_status(self, message):
@@ -92,14 +308,126 @@ class LinePacking(QMainWindow):
             self.result_view.setText(f"Lỗi khi cập nhật trạng thái: {str(e)}")
             self.result_view.setStyleSheet("color: red; font-weight: bold;")
 
-    def handle_trigger_result(self, success, message):
-        """Xử lý kết quả gửi message 'TRIGGER'"""
+    def handle_trigger_result(self, success, message, result):
+        """Xử lý kết quả gửi message 'TRIGGER' và kết quả từ Vision Master"""
         try:
             if success:
-                self.result_view.setText(f"Message 'TRIGGER' đã gửi thành công!\n{message}")
-                self.result_view.setStyleSheet("color: green; font-weight: bold;")
+                # Tìm ảnh mới nhất từ thư mục kết quả
+                if os.path.exists(self.result_folder):
+                    images = [f for f in os.listdir(self.result_folder) if f.endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
+                    
+                    if images:
+                        images.sort(key=lambda x: os.path.getmtime(os.path.join(self.result_folder, x)), reverse=True)
+                        latest_image = images[0]
+                        image_path = os.path.join(self.result_folder, latest_image)
+                        
+                        # Xử lý kết quả từ Vision Master
+                        if result == "OK":
+                            # Tạo thư mục OK nếu chưa tồn tại
+                            if not os.path.exists(self.ok_folder):
+                                os.makedirs(self.ok_folder)
+                                
+                            # Cập nhật giao diện OK
+                            self.result_view.setText("OK")
+                            self.result_view.setStyleSheet("""
+                                color: green; 
+                                font-weight: bold; 
+                                font-size: 48px;
+                                background-color: #B8FFB8;
+                            """)
+                            
+                            # Đổi màu khung kết quả về màu xanh nhạt
+                            result_frame = self.result_view.parentWidget()
+                            if result_frame:
+                                result_frame.setStyleSheet("""
+                                    border: 2px solid green; 
+                                    border-radius: 5px; 
+                                    background-color: #EAFFEA;
+                                """)
+                            
+                            self.pass_count += 1
+                            
+                            # Lưu ảnh vào thư mục OK
+                            new_path = os.path.join(self.ok_folder, latest_image)
+                            try:
+                                shutil.copy2(image_path, new_path)
+                            except:
+                                print(f"Không thể sao chép ảnh vào thư mục OK: {latest_image}")
+                                
+                        elif result == "NG":
+                            # Tạo thư mục NG nếu chưa tồn tại
+                            if not os.path.exists(self.ng_folder):
+                                os.makedirs(self.ng_folder)
+                                
+                            # Cập nhật giao diện NG với màu đỏ nổi bật
+                            self.result_view.setText("NG")
+                            self.result_view.setStyleSheet("""
+                                color: white;
+                                font-weight: bold;
+                                font-size: 48px;
+                                background-color: #FF4444;
+                                border: 2px solid darkred;
+                                border-radius: 10px;
+                                padding: 10px;
+                            """)
+                            
+                            # Đổi màu khung kết quả sang đỏ
+                            result_frame = self.result_view.parentWidget()
+                            if result_frame:
+                                result_frame.setStyleSheet("""
+                                    border: 2px solid red; 
+                                    border-radius: 5px; 
+                                    background-color: #FFE4E1;
+                                """)
+                            
+                            self.fail_count += 1
+                            
+                            # Lưu ảnh vào thư mục NG
+                            new_path = os.path.join(self.ng_folder, latest_image)
+                            try:
+                                shutil.copy2(image_path, new_path)
+                            except:
+                                print(f"Không thể sao chép ảnh vào thư mục NG: {latest_image}")
+                        
+                        else:
+                            # Kết quả không xác định
+                            self.result_view.setText(f"Kết quả không xác định: {result}")
+                            self.result_view.setStyleSheet("color: orange; font-weight: bold;")
+                        
+                        # Cập nhật số liệu thống kê
+                        self.scan_count += 1
+                        self.update_stats()
+                        
+                        # Cập nhật hiển thị ảnh
+                        self.original_pixmap = QPixmap(image_path)
+                        
+                        # Cập nhật camera view
+                        camera_pixmap = self.original_pixmap.scaled(
+                            self.camera_label.width(), 
+                            self.camera_label.height(),
+                            Qt.AspectRatioMode.KeepAspectRatio, 
+                            Qt.TransformationMode.SmoothTransformation
+                        )
+                        self.camera_label.setPixmap(camera_pixmap)
+                        self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                        
+                        # Cập nhật image view
+                        self.update_image_displays()
+                        
+                        # Thêm vào log
+                        self.add_to_log(
+                            sn=self.sn_input.text(),
+                            model=self.model_input.text(),
+                            result=result
+                        )
+                    else:
+                        self.result_view.setText("Không tìm thấy ảnh kết quả!")
+                        self.result_view.setStyleSheet("color: red; font-weight: bold;")
+                else:
+                    self.result_view.setText(f"Thư mục kết quả không tồn tại: {self.result_folder}")
+                    self.result_view.setStyleSheet("color: red; font-weight: bold;")
             else:
-                self.result_view.setText(f"Message 'TRIGGER' thất bại!\n{message}")
+                self.result_view.setText(f"Lỗi kết nối: {message}")
                 self.result_view.setStyleSheet("color: red; font-weight: bold;")
         except Exception as e:
             print(f"Error in handling trigger result: {str(e)}")
@@ -379,9 +707,10 @@ class LinePacking(QMainWindow):
         
         # Right view - Results (Chỉ hiển thị OK, NG, Waiting)
         result_frame = QFrame()
+        result_frame.setObjectName("result_frame")  # Đặt tên để dễ truy cập
         result_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
         result_layout = QVBoxLayout(result_frame)
-        result_layout.setContentsMargins(10, 10, 10, 10)  # Thêm padding bên trong
+        result_layout.setContentsMargins(10, 10, 10, 10)
         
         self.result_view = QLabel("Waiting...")
         self.result_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -473,105 +802,37 @@ class LinePacking(QMainWindow):
         """Khôi phục kích thước mặc định cho splitter"""
         splitter.setSizes([100, 300, 200, 200])
 
-    def update_camera_preview(self):
-        if not self.is_running:
-            return  # Không cập nhật nếu chưa bắt đầu chạy
-            
-        result_folder = r"C:\Users\a\Desktop\Work\VisionCheckLabel\image\Result"
-        
-        # Kiểm tra xem thư mục kết quả có tồn tại không
-        if os.path.exists(result_folder):
-            # Lấy tất cả các tệp ảnh trong thư mục
-            images = [f for f in os.listdir(result_folder) if f.endswith(('.jpg', '.jpeg', '.png', 'bmp'))]
-            
-            if images:
-                # Chọn ảnh mới nhất từ danh sách ảnh
-                images.sort(key=lambda x: os.path.getmtime(os.path.join(result_folder, x)), reverse=True)
-                image_path = os.path.join(result_folder, images[0])  # Lấy ảnh mới nhất theo thời gian sửa đổi
-                
-                # Chỉ cập nhật nếu đây là ảnh mới
-                if image_path != self.current_image_path:
-                    if os.path.exists(image_path):
-                        # Lưu đường dẫn ảnh hiện tại
-                        self.current_image_path = image_path
-                        
-                        # Tải ảnh và lưu phiên bản gốc
-                        self.original_pixmap = QPixmap(image_path)
-                        
-                        # Cập nhật hiển thị ảnh
-                        self.update_image_displays()
-                        
-        else:
-            print(f"Result folder does not exist: {result_folder}")
-            
-  
-
     def start_inspection(self):
-        """Start the inspection process and send TRIGGER to comp4"""
+        """Start the inspection process and send TRIGGER to Vision Master"""
         try:
-            current_state = self.windowState()
-            # Check if S/N and Model are entered
+            # Kiểm tra dữ liệu đầu vào
             if not self.sn_input.text() or not self.model_input.text():
-                self.result_view.setText("Please enter S/N and Model")
+                self.result_view.setText("Vui lòng nhập S/N và Model")
                 self.result_view.setStyleSheet("color: red; font-weight: bold;")
                 return
 
             # Đánh dấu là đã bắt đầu chạy
             self.is_running = True
-            self.camera_timer.start(100)
             
-            # Cập nhật giao diện khi bắt đầu quá trình gửi TRIGGER
-            self.result_view.setText("Đang gửi message \"TRIGGER\" đến comp4...\nVui lòng đợi...")
+            # Đặt lại kết quả về trạng thái chờ
+            self.result_view.setText("Đang gửi message \"TRIGGER\" đến Vision Master...\nVui lòng đợi...")
             self.result_view.setStyleSheet("color: orange; font-weight: bold;")
-            self.teaching_status_label.setText("Processing")
-            self.teaching_status_label.setStyleSheet("color: orange; font-weight: bold;")
-
+            
+            # Đặt lại màu nền của frame kết quả
+            result_frame = self.result_view.parentWidget()
+            if result_frame:
+                result_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
+            
             # Hiển thị thông báo trên thanh trạng thái
             self.statusBar().showMessage(f"Đang gửi message \"TRIGGER\" qua {self.serial_port} - {self.serial_baudrate} baud")
 
-            QApplication.processEvents()  # Update UI immediately
-
-            # Kiểm tra thư viện PySerial
-            try:
-                import serial
-                print("PySerial đã được cài đặt")
-            except ImportError:
-                self.result_view.setText("Lỗi: Thư viện PySerial chưa được cài đặt!\nVui lòng cài đặt bằng lệnh:\npip install pyserial")
-                self.result_view.setStyleSheet("color: red; font-weight: bold;")
-                self.statusBar().showMessage("Lỗi: Thư viện PySerial chưa được cài đặt!")
-                self.is_running = False
-                return
-
-            # Kiểm tra xem đã có serial worker đang chạy chưa
-            if hasattr(self, 'trigger_worker') and self.trigger_worker.isRunning():
-                self.result_view.setText("Đang xử lý yêu cầu trước đó...\nVui lòng đợi.")
-                return
-
-            # Hiển thị debug trên console
-            print(f"Bắt đầu gửi message \"TRIGGER\" qua cổng COM4")
-
-            # Thay đổi ở đây: Kết nối với COM4 thay vì COM3
-            self.serial_port = "COM4"  # Đảm bảo là COM4
+            QApplication.processEvents()  # Cập nhật UI ngay lập tức
 
             # Tạo và chạy worker thread để gửi message "TRIGGER" qua serial
             self.trigger_worker = SerialTriggerWorker(self.serial_port, self.serial_baudrate)
             self.trigger_worker.finished.connect(self.handle_trigger_result)
             self.trigger_worker.status_update.connect(self.update_trigger_status)
             self.trigger_worker.start()
-
-            # Hiển thị debug
-            print("Đã khởi động thread gửi message \"TRIGGER\"")
-
-            # Thêm vào log
-            self.add_to_log(
-                sn=self.sn_input.text(),
-                model=self.model_input.text(),
-                result="TRIGGER Sent"
-            )
-            if current_state & Qt.WindowState.WindowFullScreen:
-                QTimer.singleShot(100, lambda: self.setWindowState(current_state))
-            # Bây giờ mới bắt đầu camera timer
-            self.camera_timer.start(1000)  # Update every second
 
         except Exception as e:
             self.is_running = False
@@ -580,9 +841,8 @@ class LinePacking(QMainWindow):
 
             self.result_view.setText(f"Lỗi khi khởi động hệ thống:\n{str(e)}")
             self.result_view.setStyleSheet("color: red; font-weight: bold;")
-            self.teaching_status_label.setText("Error")
-            self.teaching_status_label.setStyleSheet("color: red; font-weight: bold;")
             self.statusBar().showMessage(f"Lỗi: {str(e)}")
+
     def changeEvent(self, event):
         """Xử lý khi trạng thái cửa sổ thay đổi"""
         if event.type() == event.Type.WindowStateChange:
@@ -663,30 +923,6 @@ class LinePacking(QMainWindow):
             self.result_view.setText(f"Lỗi kiểm tra lại:\n{str(e)}")
             self.result_view.setStyleSheet("color: red; font-weight: bold;")
             self.statusBar().showMessage(f"Lỗi: {str(e)}")
-
-    def add_to_log(self, sn, model, result):
-        """Add an entry to the log table"""
-        row = self.log_table.rowCount()
-        self.log_table.insertRow(row)
-        
-        # Add timestamp
-        time_item = QTableWidgetItem(datetime.datetime.now().strftime("%H:%M:%S"))
-        self.log_table.setItem(row, 0, time_item)
-        
-        # Add SN and Model
-        self.log_table.setItem(row, 1, QTableWidgetItem(sn))
-        self.log_table.setItem(row, 2, QTableWidgetItem(model))
-        
-        # Add result with color
-        result_item = QTableWidgetItem(result)
-        if "PASS" in result:
-            result_item.setBackground(Qt.GlobalColor.green)
-        elif "FAIL" in result:
-            result_item.setBackground(Qt.GlobalColor.red)
-        self.log_table.setItem(row, 3, result_item)
-        
-        # Scroll to the latest entry
-        self.log_table.scrollToBottom()
 
     def show_auto_view(self):
         """Switch to auto view"""
@@ -867,7 +1103,7 @@ class LinePacking(QMainWindow):
         
         com_port = QComboBox()
         com_port.addItems(["COM1", "COM2", "COM3", "COM4", "COM5", "COM6"])
-        com_port.setCurrentText("COM4")  # Default to COM4
+        com_port.setCurrentText("COM5")  # Default to COM5
         com_layout.addRow("Cổng COM:", com_port)
         
         baudrate = QComboBox()
@@ -1056,6 +1292,81 @@ class LinePacking(QMainWindow):
             self, "Chọn thư mục", "")
         if folder_path:
             line_edit.setText(folder_path)
+
+    def add_to_log(self, sn, model, result):
+        """Add an entry to the log table with processing time and save to database"""
+        try:
+            # Lấy timestamp hiện tại
+            timestamp = datetime.datetime.now()
+            timestamp_str = timestamp.strftime("%H:%M:%S")
+            
+            # Tạo thời gian xử lý giả lập
+            processing_time = f"{random.randint(100, 500)} ms"
+            
+            # Thêm vào bảng UI
+            row = self.log_table.rowCount()
+            self.log_table.insertRow(row)
+            
+            # Add timestamp
+            time_item = QTableWidgetItem(timestamp_str)
+            self.log_table.setItem(row, 0, time_item)
+            
+            # Add SN and Model
+            self.log_table.setItem(row, 1, QTableWidgetItem(sn))
+            self.log_table.setItem(row, 2, QTableWidgetItem(model))
+            
+            # Add result with color
+            result_item = QTableWidgetItem(result)
+            if result == "OK":
+                result_item.setBackground(Qt.GlobalColor.green)
+                result_item.setForeground(Qt.GlobalColor.white)
+            elif result == "NG":
+                result_item.setBackground(Qt.GlobalColor.red)
+                result_item.setForeground(Qt.GlobalColor.white)
+            else:
+                # Cho các kết quả khác (như RECHECK Triggered, ERROR, vv)
+                result_item.setBackground(Qt.GlobalColor.lightGray)
+            self.log_table.setItem(row, 3, result_item)
+            
+            # Add processing time
+            process_time_item = QTableWidgetItem(processing_time)
+            self.log_table.setItem(row, 4, process_time_item)
+            
+            # Scroll to the latest entry
+            self.log_table.scrollToBottom()
+            
+            # Lưu vào cơ sở dữ liệu
+            if self.db_manager:
+                # Xác định đường dẫn ảnh
+                image_path = None
+                if result == "OK" and os.path.exists(self.ok_folder):
+                    images = [f for f in os.listdir(self.ok_folder) if f.endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
+                    if images:
+                        images.sort(key=lambda x: os.path.getmtime(os.path.join(self.ok_folder, x)), reverse=True)
+                        image_path = os.path.join(self.ok_folder, images[0])
+                elif result == "NG" and os.path.exists(self.ng_folder):
+                    images = [f for f in os.listdir(self.ng_folder) if f.endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
+                    if images:
+                        images.sort(key=lambda x: os.path.getmtime(os.path.join(self.ng_folder, x)), reverse=True)
+                        image_path = os.path.join(self.ng_folder, images[0])
+                
+                # Lưu vào cơ sở dữ liệu
+                success = self.db_manager.save_log(
+                    timestamp=timestamp,
+                    serial_number=sn,
+                    model=model,
+                    result=result,
+                    processing_time=processing_time,
+                    image_path=image_path
+                )
+                
+                if not success:
+                    print("Không thể lưu log vào cơ sở dữ liệu!")
+                    self.statusBar().showMessage("Không thể lưu log vào cơ sở dữ liệu!")
+        
+        except Exception as e:
+            print(f"Lỗi khi thêm log: {str(e)}")
+            self.statusBar().showMessage(f"Lỗi khi thêm log: {str(e)}")
 
 
 def main():
