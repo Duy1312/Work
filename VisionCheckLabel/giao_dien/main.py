@@ -223,6 +223,95 @@ class SerialTriggerWorker(QThread):
             self.finished.emit(False, f"Lỗi không xác định: {str(e)}", "ERROR")
 
 
+class IOControllerWorker(QThread):
+    trigger_signal = pyqtSignal()  # Phát tín hiệu để bắt đầu kiểm tra
+    status_update = pyqtSignal(str)
+
+    def __init__(self, port="COM4", baudrate=19200):  # Thay đổi cổng COM và baudrate phù hợp với IOController
+        super().__init__()
+        self.port = port
+        self.baudrate = baudrate
+        self.running = True
+        self.ser = None
+        self.stored_byte_in = 0  # Lưu giá trị byte trước đó, cần thiết cho việc phát hiện thay đổi trạng thái
+
+    def stop(self):
+        self.running = False
+        if self.ser and self.ser.is_open:
+            self.ser.close()
+
+    def run(self):
+        try:
+            self.status_update.emit(f"Đang kết nối với IO Controller qua {self.port}...")
+            self.ser = serial.Serial(self.port, self.baudrate, timeout=0.1)
+            self.status_update.emit(f"Đã kết nối với IO Controller qua {self.port}")
+
+            while self.running:
+                if self.ser.in_waiting > 0:
+                    data = self.ser.read(self.ser.in_waiting)
+                    if data:
+                        # Log dữ liệu nhận được
+                        hex_data = ' '.join([f"{b:02X}" for b in data])
+                        self.status_update.emit(f"Nhận được dữ liệu từ IO: {hex_data}")
+                        print(f"DEBUG - Nhận được dữ liệu từ IO: {hex_data}")
+                        
+                        # Xử lý dữ liệu theo định dạng của IOController.py
+                        if len(data) >= 3:
+                            # Kiểm tra nếu nhận được tín hiệu từ In_8 (02 01 03)
+                            if data[0] == 0x02 and data[2] == 0x03:
+                                # So sánh với byte trước đó để xác định trạng thái On/Off
+                                if data[1] > self.stored_byte_in:  # Trạng thái On
+                                    self.status_update.emit("Nhận được tín hiệu ON từ In_8, bắt đầu kiểm tra")
+                                    print("DEBUG - TRIGGER SIGNAL EMITTED (ON)")
+                                    self.trigger_signal.emit()  # Phát tín hiệu để bắt đầu kiểm tra
+                                
+                                # Cập nhật giá trị byte đã lưu
+                                self.stored_byte_in = data[1]
+                
+                time.sleep(0.01)  # Tránh sử dụng quá nhiều CPU
+
+        except serial.SerialException as e:
+            self.status_update.emit(f"Lỗi kết nối với IO Controller: {str(e)}")
+            print(f"ERROR - IO Controller: {str(e)}")
+        except Exception as e:
+            self.status_update.emit(f"Lỗi không xác định từ IO Controller: {str(e)}")
+            print(f"ERROR - IO Controller exception: {str(e)}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            if self.ser and self.ser.is_open:
+                self.ser.close()
+
+    def send_output_signal(self, output_port, state):
+        """Gửi tín hiệu đến đầu ra của IO Controller
+        output_port: 1-4 tương ứng với Out_1 đến Out_4
+        state: True để bật, False để tắt
+        """
+        try:
+            if not self.ser or not self.ser.is_open:
+                self.status_update.emit("Không thể gửi tín hiệu: Cổng COM chưa được mở")
+                return False
+                
+            # Định dạng: 98 0X 0Y 99, với X là cổng ra, Y là trạng thái (1 = on, 0 = off)
+            port_code = 1 << (output_port - 1)  # 1, 2, 4, 8 tương ứng với Out_1, Out_2, Out_3, Out_4
+            state_code = 1 if state else 0
+            
+            # Tạo chuỗi bytes để gửi
+            command = bytes([0x98, port_code, state_code, 0x99])
+            
+            # Log thông tin gửi
+            hex_data = ' '.join([f"{b:02X}" for b in command])
+            self.status_update.emit(f"Gửi dữ liệu: {hex_data}")
+            
+            # Gửi lệnh
+            self.ser.write(command)
+            return True
+            
+        except Exception as e:
+            self.status_update.emit(f"Lỗi khi gửi tín hiệu đến IO Controller: {str(e)}")
+            return False
+
+
 class LinePacking(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -233,10 +322,13 @@ class LinePacking(QMainWindow):
         
         
         # Cấu hình kết nối serial
-        self.serial_port = "COM5"  # Đảm bảo kết nối với COM5
+        self.serial_port = "COM5"  # Port để gửi message 'TRIGGER' (giữ nguyên)
         self.serial_baudrate = 9600
         
-        self.serial_baudrate
+        # Cấu hình kết nối IO Controller
+        self.io_port = "COM4"  # Thay đổi sang COM4 để phù hợp với IOController.py
+        self.io_baudrate = 19200  # Thay đổi baudrate để phù hợp với IOController.py
+        
         # Biến để theo dõi trạng thái hoạt động
         self.is_running = False
         self.original_pixmap = None  # Để lưu trữ ảnh gốc
@@ -259,6 +351,9 @@ class LinePacking(QMainWindow):
             self.db_manager = None
             print(f"Lỗi khi khởi tạo kết nối đến cơ sở dữ liệu: {str(e)}")
             self.statusBar().showMessage("Không thể kết nối đến cơ sở dữ liệu SQL Server")
+        
+        # Khởi tạo IO Controller Worker nhưng chưa khởi động
+        self.io_worker = None
         
         self.initUI()  # Đổi tên từ initUI thành init_ui để tuân theo quy ước Python
 
@@ -311,6 +406,10 @@ class LinePacking(QMainWindow):
     def handle_trigger_result(self, success, message, result):
         """Xử lý kết quả gửi message 'TRIGGER' và kết quả từ Vision Master"""
         try:
+            # Tắt đèn waiting (Out_3) nếu IO worker đang chạy
+            if self.io_worker and hasattr(self.io_worker, 'send_output_signal'):
+                self.io_worker.send_output_signal(3, False)
+            
             if success:
                 # Tìm ảnh mới nhất từ thư mục kết quả
                 if os.path.exists(self.result_folder):
@@ -354,6 +453,12 @@ class LinePacking(QMainWindow):
                             except:
                                 print(f"Không thể sao chép ảnh vào thư mục OK: {latest_image}")
                                 
+                            # Bật đèn OK (Out_1) nếu IO worker đang chạy
+                            if self.io_worker and hasattr(self.io_worker, 'send_output_signal'):
+                                self.io_worker.send_output_signal(1, True)
+                                # Tắt đèn sau 1 giây
+                                QTimer.singleShot(1000, lambda: self.io_worker.send_output_signal(1, False))
+                        
                         elif result == "NG":
                             # Tạo thư mục NG nếu chưa tồn tại
                             if not os.path.exists(self.ng_folder):
@@ -388,6 +493,12 @@ class LinePacking(QMainWindow):
                                 shutil.copy2(image_path, new_path)
                             except:
                                 print(f"Không thể sao chép ảnh vào thư mục NG: {latest_image}")
+                            
+                            # Bật đèn NG (Out_2) nếu IO worker đang chạy
+                            if self.io_worker and hasattr(self.io_worker, 'send_output_signal'):
+                                self.io_worker.send_output_signal(2, True)
+                                # Tắt đèn sau 1 giây
+                                QTimer.singleShot(1000, lambda: self.io_worker.send_output_signal(2, False))
                         
                         else:
                             # Kết quả không xác định
@@ -751,8 +862,62 @@ class LinePacking(QMainWindow):
         splitter.setSizes([100, 300, 200, 200])
 
     def start_inspection(self):
-        """Start the inspection process and send TRIGGER to Vision Master"""
+        """Bắt đầu lắng nghe tín hiệu từ I/O Controller"""
         try:
+            # Kiểm tra dữ liệu đầu vào
+            if not self.sn_input.text() or not self.model_input.text():
+                self.result_view.setText("Vui lòng nhập S/N và Model")
+                self.result_view.setStyleSheet("color: red; font-weight: bold;")
+                return
+            
+            # Đặt trạng thái chạy
+            self.is_running = True
+            
+            # Đặt lại kết quả về trạng thái chờ
+            self.result_view.setText("Đang chờ tín hiệu từ I/O Controller...\nVui lòng đợi.")
+            self.result_view.setStyleSheet("color: orange; font-weight: bold;")
+            
+            # Đặt lại màu nền của frame kết quả
+            result_frame = self.result_view.parentWidget()
+            if result_frame:
+                result_frame.setStyleSheet("border: 2px solid black; border-radius: 5px; background-color: #f8f8f8;")
+            
+            # Dừng IO Controller Worker cũ nếu có
+            if self.io_worker:
+                self.io_worker.stop()
+                self.io_worker = None
+            
+            # Khởi động IO Controller Worker mới
+            self.io_worker = IOControllerWorker(self.io_port, self.io_baudrate)
+            self.io_worker.status_update.connect(self.update_io_status)
+            
+            # Kết nối tín hiệu trigger với phương thức xử lý
+            print(f"DEBUG - Kết nối tín hiệu trigger với phương thức xử lý - Lắng nghe trên {self.io_port}")
+            self.io_worker.trigger_signal.connect(self.start_inspection_from_io)
+            
+            # Khởi động worker
+            self.io_worker.start()
+            self.statusBar().showMessage(f"Đã kết nối và đang lắng nghe tín hiệu từ I/O Controller qua {self.io_port}")
+            
+            QApplication.processEvents()  # Cập nhật UI ngay lập tức
+            
+            # Thông báo cho người dùng biết hệ thống đang chờ tín hiệu
+            print("Hệ thống đã sẵn sàng và đang chờ tín hiệu từ I/O Controller...")
+            
+        except Exception as e:
+            self.is_running = False
+            import traceback
+            traceback.print_exc()
+            
+            self.result_view.setText(f"Lỗi khi khởi động hệ thống:\n{str(e)}")
+            self.result_view.setStyleSheet("color: red; font-weight: bold;")
+            self.statusBar().showMessage(f"Lỗi: {str(e)}")
+
+    def start_inspection_from_io(self):
+        """Bắt đầu kiểm tra khi nhận tín hiệu từ IO Controller"""
+        try:
+            print("DEBUG - start_inspection_from_io được gọi")
+            
             # Kiểm tra dữ liệu đầu vào
             if not self.sn_input.text() or not self.model_input.text():
                 self.result_view.setText("Vui lòng nhập S/N và Model")
@@ -761,6 +926,10 @@ class LinePacking(QMainWindow):
 
             # Đánh dấu là đã bắt đầu chạy
             self.is_running = True
+            
+            # Bật đèn Waiting (Out_3)
+            if self.io_worker and hasattr(self.io_worker, 'send_output_signal'):
+                self.io_worker.send_output_signal(3, True)
             
             # Đặt lại kết quả về trạng thái chờ
             self.result_view.setText("Đang gửi message \"TRIGGER\" đến Vision Master...\nVui lòng đợi...")
@@ -791,24 +960,28 @@ class LinePacking(QMainWindow):
             self.result_view.setStyleSheet("color: red; font-weight: bold;")
             self.statusBar().showMessage(f"Lỗi: {str(e)}")
 
-    def changeEvent(self, event):
-        """Xử lý khi trạng thái cửa sổ thay đổi"""
-        if event.type() == event.Type.WindowStateChange:
-            # Nếu thay đổi sang/từ full screen, đảm bảo giao diện được cập nhật đúng
-            if self.windowState() & Qt.WindowState.WindowFullScreen:
-                # Đang ở chế độ full screen
-                QTimer.singleShot(300, self.update_image_displays)
-            elif event.oldState() & Qt.WindowState.WindowFullScreen:
-                # Vừa thoát chế độ full screen
-                QTimer.singleShot(300, self.update_image_displays)
-        
-        super().changeEvent(event)
+    def update_io_status(self, message):
+        """Cập nhật trạng thái IO Controller"""
+        self.statusBar().showMessage(message)
+        print(message)  # Log để debug
+
     def stop_inspection(self):
         """Stop the inspection process"""
         self.is_running = False
         self.camera_timer.stop()
+        
+        # Dừng IO Controller Worker nếu có
+        if self.io_worker:
+            self.io_worker.stop()
+            self.io_worker = None
+            
         self.result_view.setText("System stopped")
         self.result_view.setStyleSheet("color: blue; font-weight: bold;")
+        
+        # Tắt tất cả đèn báo
+        if self.io_worker and hasattr(self.io_worker, 'send_output_signal'):
+            for port in range(1, 5):  # Tắt Out_1 đến Out_4
+                self.io_worker.send_output_signal(port, False)
 
     def reset_system(self):
         """Reset the system to initial state"""
@@ -880,6 +1053,17 @@ class LinePacking(QMainWindow):
         """Switch to auto view"""
         self.auto_btn.setStyleSheet("background-color: #CCFF99; font-weight: bold;")
         self.setting_btn.setStyleSheet("background-color: #D3D3D3; font-weight: bold;")
+        
+        # Khởi động IO Controller Worker
+        if not self.io_worker:
+            self.io_worker = IOControllerWorker(self.io_port, self.io_baudrate)
+            self.io_worker.status_update.connect(self.update_io_status)
+            self.io_worker.trigger_signal.connect(self.start_inspection_from_io)
+            self.io_worker.start()
+            self.statusBar().showMessage(f"Đã kết nối với IO Controller qua {self.io_port}")
+        
+        # Kết nối nút Auto với IO Controller
+        self.auto_btn.clicked.connect(self.show_auto_view)  # Đảm bảo nút auto vẫn hoạt động đúng
 
     def show_settings_view(self):
         """Switch to settings view"""

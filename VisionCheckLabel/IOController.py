@@ -229,7 +229,7 @@ class IOControllerApp:
         
         # COM port selection
         ttk.Label(conn_frame, text="Cổng COM:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        self.port_var = tk.StringVar(value="COM3")
+        self.port_var = tk.StringVar(value="COM4")
         ttk.Entry(conn_frame, textvariable=self.port_var, width=10).grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
         
         # IO Type selection
